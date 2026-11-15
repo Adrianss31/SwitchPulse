@@ -240,6 +240,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setGameNote(game: LikedGame, note: String?) {
+        viewModelScope.launch {
+            repository.preferences.setGameNote(game, note)
+            val clean = note?.trim().orEmpty()
+            val msg = if (clean.isNotEmpty()) {
+                "Nota per l'IA salvata su \"${game.title}\""
+            } else {
+                "Nota rimossa per \"${game.title}\""
+            }
+            transientState.update { it.copy(statusMessage = msg) }
+        }
+    }
+
+    fun setUserTastePrompt(prompt: String) {
+        viewModelScope.launch {
+            repository.preferences.updateUserTastePrompt(prompt)
+            val msg = if (prompt.trim().isNotBlank()) {
+                "Preferenze AI salvate · Tocca \"Ricalcola AI ora\" per aggiornare la classifica"
+            } else {
+                "Preferenze AI testuali rimosse"
+            }
+            transientState.update { it.copy(statusMessage = msg) }
+        }
+    }
+
     fun searchProfileGames(query: String) {
         if (query.trim().length < 2) {
             transientState.update { it.copy(profileSearchResults = emptyList()) }

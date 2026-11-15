@@ -3,9 +3,9 @@ package com.switchpulse.app.data.remote
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.GameExternalInsights
+import com.switchpulse.app.data.model.LikedGame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -16,63 +16,123 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
- * Fetches on-demand external critic/duration metadata (Metacritic & HowLongToBeat) for a single
- * game when the user opens its Detail Sheet.
- * - Reads Steam `appdetails` when `steamAppId` is available for official Metacritic score.
- * - Uses Gemini 4 Hydrogen with Google Search Grounding (`google_search`) when a Gemini API key
- *   is configured to look up Nintendo Switch Metacritic + HLTB hours in one grounded call.
+ * Fetches on-demand external critic/duration metadata (Metacritic & HowLongToBeat) and a deep
+ * personalized AI analysis for a single game when the user opens its Detail Sheet.
+ * - Resolves Steam `appdetails` (including on-demand Steam search if `steamAppId == null`) for Metascore.
+ * - Tries Gemini with Google Search Grounding (`google_search`) first; if Search Grounding is rejected
+ *   (e.g. Free Tier keys on Gemini 3+/4) or returns empty data, automatically falls back to direct
+ *   structured Gemini reasoning (without `tools`) combining Metacritic/HLTB knowledge and personalized verdict.
  */
 class GameInsightsClient(
     private val httpClient: OkHttpClient = defaultHttpClient(),
     private val steamAppDetailsUrl: String = "https://store.steampowered.com/api/appdetails",
-    private val geminiEndpointOverride: String? = null
+    private val geminiEndpointOverride: String? = null,
+    private val steamStoreSearchUrl: String? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun fetchInsights(
         deal: Deal,
         geminiApiKey: String,
-        geminiModel: String = GeminiModels.HYDROGEN
+        geminiModel: String = GeminiModels.HYDROGEN,
+        likedGames: List<LikedGame> = emptyList(),
+        userTastePrompt: String = ""
     ): GameExternalInsights = withContext(Dispatchers.IO) {
-        val steamMeta = deal.steamAppId?.let { fetchSteamMetacritic(it) }
+        val resolvedAppId = deal.steamAppId ?: resolveSteamAppIdOnDemand(deal)
+        val steamMeta = resolvedAppId?.let { fetchSteamMetacritic(it) }
         val cleanKey = geminiApiKey.trim()
+        val effectiveModel = geminiModel.trim().ifBlank { GeminiModels.HYDROGEN }
+        val profileSig = computeProfileSignature(likedGames, userTastePrompt)
 
-        val grounded = if (cleanKey.isNotBlank()) {
-            fetchGroundedWithGemini(
+        val aiResult = if (cleanKey.isNotBlank()) {
+            fetchWithGeminiAndFallback(
                 deal = deal,
                 apiKey = cleanKey,
-                modelId = geminiModel.trim().ifBlank { GeminiModels.HYDROGEN }
+                modelId = effectiveModel,
+                likedGames = likedGames,
+                userTastePrompt = userTastePrompt
             )
         } else {
-            null
+            GeminiInsightsResult(payload = null, mode = AiMode.NONE, errorMessage = null)
         }
 
-        val metacriticScore = grounded?.metacriticScore ?: steamMeta?.score ?: deal.metacriticScore
-        val metacriticUrl = grounded?.metacriticUrl?.takeIf { it.startsWith("http") }
+        val payload = aiResult.payload
+        val metacriticScore = payload?.metacriticScore?.takeIf { it in 1..100 }
+            ?: steamMeta?.score
+            ?: deal.metacriticScore
+        val metacriticUrl = payload?.metacriticUrl?.takeIf { it.startsWith("http") }
             ?: steamMeta?.url?.takeIf { it.startsWith("http") }
 
         val sourceLabel = when {
-            grounded != null && steamMeta != null -> "Steam + ✨ ${geminiModel.ifBlank { GeminiModels.HYDROGEN }} (Search)"
-            grounded != null -> "✨ ${geminiModel.ifBlank { GeminiModels.HYDROGEN }} (Google Search)"
-            steamMeta != null -> "Steam Metacritic API"
-            cleanKey.isNotBlank() -> "Lookup AI non disponibile · link manuali"
-            else -> "Aggiungi una chiave Gemini per HLTB e Metacritic Switch"
+            payload != null && steamMeta != null && aiResult.mode == AiMode.GROUNDED_SEARCH ->
+                "Steam + ✨ $effectiveModel (Google Search)"
+            payload != null && steamMeta != null ->
+                "Steam + ✨ $effectiveModel (Analisi AI & stima HLTB)"
+            payload != null && aiResult.mode == AiMode.GROUNDED_SEARCH ->
+                "✨ $effectiveModel (Google Search)"
+            payload != null ->
+                "✨ $effectiveModel (Stima critica & Analisi AI)"
+            steamMeta != null && aiResult.errorMessage != null ->
+                "Steam Metacritic API · ${aiResult.errorMessage}"
+            steamMeta != null ->
+                "Steam Metacritic API"
+            aiResult.errorMessage != null ->
+                "⚠️ ${aiResult.errorMessage}"
+            cleanKey.isNotBlank() ->
+                "Lookup AI non disponibile · usa i link rapidi"
+            else ->
+                "Aggiungi una chiave Gemini per analisi personalizzata, HLTB e Metacritic Switch"
         }
 
         GameExternalInsights(
             dealId = deal.id,
             metacriticScore = metacriticScore,
             metacriticUrl = metacriticUrl,
-            hltbMainHours = grounded?.hltbMainHours,
-            hltbMainExtraHours = grounded?.hltbMainExtraHours,
-            hltbCompletionistHours = grounded?.hltbCompletionistHours,
-            summaryNote = grounded?.summaryNote,
+            hltbMainHours = payload?.hltbMainHours?.takeIf { it.isNotBlank() },
+            hltbMainExtraHours = payload?.hltbMainExtraHours?.takeIf { it.isNotBlank() },
+            hltbCompletionistHours = payload?.hltbCompletionistHours?.takeIf { it.isNotBlank() },
+            aiVerdict = payload?.verdict?.trim()?.takeIf { it.isNotBlank() },
+            summaryNote = payload?.summaryNote?.trim()?.takeIf { it.isNotBlank() },
             sourceLabel = sourceLabel,
+            profileSignature = profileSig,
             fetchedAtMs = System.currentTimeMillis()
         )
+    }
+
+    private fun resolveSteamAppIdOnDemand(deal: Deal): Int? {
+        if (deal.publisher.lowercase().contains("nintendo")) return null
+        val searchEndpoint = steamStoreSearchUrl?.takeIf { it.isNotBlank() }
+            ?: if (geminiEndpointOverride == null) "https://store.steampowered.com/api/storesearch/" else return null
+        return runCatching {
+            val cleanTitle = DealTitleNormalizer.normalize(deal.title)
+            if (cleanTitle.length < 2) return@runCatching null
+            val url = searchEndpoint.toHttpUrl().newBuilder()
+                .addQueryParameter("term", cleanTitle)
+                .addQueryParameter("l", "english")
+                .addQueryParameter("cc", "IT")
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0")
+                .get()
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val raw = response.body?.string().orEmpty()
+                val decoded = json.decodeFromString<SteamStoreSearchResponse>(raw)
+                decoded.items.firstOrNull { item ->
+                    val nameLower = item.name.orEmpty().lowercase()
+                    !nameLower.contains("soundtrack") &&
+                        !nameLower.contains("ost") &&
+                        !nameLower.contains("artbook") &&
+                        !nameLower.contains("demo")
+                }?.id
+            }
+        }.getOrNull()
     }
 
     private fun fetchSteamMetacritic(appId: Int): SteamMetacriticBlock? = runCatching {
@@ -95,36 +155,91 @@ class GameInsightsClient(
         }
     }.getOrNull()
 
-    private fun fetchGroundedWithGemini(
+    private fun fetchWithGeminiAndFallback(
         deal: Deal,
         apiKey: String,
-        modelId: String
-    ): GroundedInsightsPayload? = runCatching {
-        val cleanTitle = DealTitleNormalizer.normalize(deal.title)
-        val platformLabel = deal.platform.displayName
+        modelId: String,
+        likedGames: List<LikedGame>,
+        userTastePrompt: String
+    ): GeminiInsightsResult {
+        val groundedAttempt = executeGeminiInsightsCall(
+            deal = deal,
+            apiKey = apiKey,
+            modelId = modelId,
+            likedGames = likedGames,
+            userTastePrompt = userTastePrompt,
+            useGoogleSearch = true
+        )
+        if (groundedAttempt.payload != null) {
+            return groundedAttempt.copy(mode = AiMode.GROUNDED_SEARCH)
+        }
+
+        // Fallback for Free Tier keys / unavailable Search Grounding on Gemini 3+/4.
+        val directAttempt = executeGeminiInsightsCall(
+            deal = deal,
+            apiKey = apiKey,
+            modelId = modelId,
+            likedGames = likedGames,
+            userTastePrompt = userTastePrompt,
+            useGoogleSearch = false
+        )
+        if (directAttempt.payload != null) {
+            return directAttempt.copy(mode = AiMode.DIRECT_KNOWLEDGE)
+        }
+
+        val combinedError = directAttempt.errorMessage ?: groundedAttempt.errorMessage
+        return GeminiInsightsResult(
+            payload = null,
+            mode = AiMode.NONE,
+            errorMessage = combinedError
+        )
+    }
+
+    private fun executeGeminiInsightsCall(
+        deal: Deal,
+        apiKey: String,
+        modelId: String,
+        likedGames: List<LikedGame>,
+        userTastePrompt: String,
+        useGoogleSearch: Boolean
+    ): GeminiInsightsResult = runCatching {
         val endpoint = geminiEndpointOverride?.takeIf { it.isNotBlank() }
             ?: "https://generativelanguage.googleapis.com/v1beta/models/$modelId:generateContent"
 
-        val prompt = """
-            Cerca su Google informazioni accurate e reali per il videogioco "${deal.title}" ($cleanTitle, su $platformLabel / Switch, publisher ${deal.publisher}):
-            1. Metascore su Metacritic (preferibilmente versione Switch o generale).
-            2. Durata su HowLongToBeat (Main Story, Main + Extras, Completionist).
-            3. Una nota sintetica in italiano (massimo 18 parole) su pregi/difetti tecnici su Switch o longevità.
-            Rispondi ESCLUSIVAMENTE con un singolo oggetto JSON valido, senza testo extra:
-            {"metacriticScore":85,"metacriticUrl":"https://www.metacritic.com/...","hltbMainHours":"18 ore","hltbMainExtraHours":"30 ore","hltbCompletionistHours":"52 ore","summaryNote":"..."}
-            Se un dato non è verificabile, usa null per quel campo.
-        """.trimIndent()
-
-        val reqObj = GeminiGenerateRequest(
-            contents = listOf(
-                GeminiContent(parts = listOf(GeminiPart(text = prompt)))
-            ),
-            tools = listOf(GeminiTool(emptyMap())),
-            generationConfig = GeminiGenerationConfig(
-                temperature = 0.1,
-                thinkingConfig = GeminiModels.thinkingConfigFor(modelId)
-            )
+        val prompt = buildDeepPrompt(
+            deal = deal,
+            likedGames = likedGames,
+            userTastePrompt = userTastePrompt,
+            groundedSearch = useGoogleSearch
         )
+
+        val thinking = if (!useGoogleSearch && (modelId == GeminiModels.HYDROGEN || modelId == GeminiModels.ARGON)) {
+            GeminiThinkingConfig(thinkingLevel = "medium")
+        } else {
+            GeminiModels.thinkingConfigFor(modelId)
+        }
+
+        val reqObj = if (useGoogleSearch) {
+            GeminiGenerateRequest(
+                contents = listOf(GeminiContent(parts = listOf(GeminiPart(text = prompt)))),
+                tools = listOf(GeminiTool(emptyMap())),
+                generationConfig = GeminiGenerationConfig(
+                    temperature = 0.15,
+                    maxOutputTokens = 1024,
+                    thinkingConfig = thinking
+                )
+            )
+        } else {
+            GeminiGenerateRequest(
+                contents = listOf(GeminiContent(parts = listOf(GeminiPart(text = prompt)))),
+                generationConfig = GeminiGenerationConfig(
+                    responseMimeType = "application/json",
+                    temperature = 0.25,
+                    maxOutputTokens = 1024,
+                    thinkingConfig = thinking
+                )
+            )
+        }
 
         val request = Request.Builder()
             .url(endpoint)
@@ -133,8 +248,15 @@ class GameInsightsClient(
             .build()
 
         httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
             val raw = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                val err = runCatching {
+                    json.decodeFromString<GeminiErrorEnvelope>(raw).error?.message
+                }.getOrNull().orEmpty().trim()
+                val shortErr = "HTTP ${response.code}${if (err.isNotBlank()) ": ${err.take(120)}" else ""}"
+                return@use GeminiInsightsResult(payload = null, mode = AiMode.NONE, errorMessage = shortErr)
+            }
+
             val envelope = json.decodeFromString<GeminiGenerateResponse>(raw)
             val allText = envelope.candidates
                 .firstOrNull()
@@ -145,9 +267,88 @@ class GameInsightsClient(
                 .joinToString("\n")
                 .trim()
 
-            parseGroundedPayload(allText)
+            val payload = parseGroundedPayload(allText)
+            if (payload == null) {
+                GeminiInsightsResult(
+                    payload = null,
+                    mode = AiMode.NONE,
+                    errorMessage = "Risposta AI non interpretabile"
+                )
+            } else {
+                GeminiInsightsResult(payload = payload, mode = AiMode.DIRECT_KNOWLEDGE, errorMessage = null)
+            }
         }
-    }.getOrNull()
+    }.getOrElse { err ->
+        GeminiInsightsResult(
+            payload = null,
+            mode = AiMode.NONE,
+            errorMessage = err.localizedMessage?.take(100) ?: "Errore di rete AI"
+        )
+    }
+
+    private fun buildDeepPrompt(
+        deal: Deal,
+        likedGames: List<LikedGame>,
+        userTastePrompt: String,
+        groundedSearch: Boolean
+    ): String {
+        val cleanTitle = DealTitleNormalizer.normalize(deal.title)
+        val platformLabel = deal.platform.displayName
+        val tags = (deal.steamTagNames.take(6) + deal.gameCategories).distinct().joinToString(", ")
+
+        val loved = likedGames.filter { it.isPositiveRating }.sortedByDescending { it.rating ?: 0 }.take(10)
+        val disliked = likedGames.filter { it.isNegativeRating }.sortedBy { it.rating ?: 0 }.take(6)
+        val owned = likedGames.filter { it.isOwned && it.rating == null }.take(8)
+
+        fun fmt(g: LikedGame): String {
+            val note = g.userNote?.trim()?.takeIf { it.isNotEmpty() }?.let { " (nota: \"$it\")" }.orEmpty()
+            val ratingPrefix = g.rating?.let { "${it}★ " }.orEmpty()
+            return "- $ratingPrefix${g.title}$note"
+        }
+
+        val profileSection = buildString {
+            if (userTastePrompt.isNotBlank()) {
+                appendLine("Preferenze dichiarate utente: ${userTastePrompt.trim()}")
+            }
+            if (loved.isNotEmpty()) {
+                appendLine("Giochi apprezzati (4-5★):")
+                loved.forEach { appendLine(fmt(it)) }
+            }
+            if (disliked.isNotEmpty()) {
+                appendLine("Giochi non piaciuti (1-2★):")
+                disliked.forEach { appendLine(fmt(it)) }
+            }
+            if (owned.isNotEmpty()) {
+                appendLine("Altri titoli in libreria/backlog: ${owned.joinToString(", ") { it.title }}")
+            }
+        }.trim().ifBlank { "Nessun profilo salvato: fornisci un'analisi critica bilanciata del gioco." }
+
+        val dataSourceInstruction = if (groundedSearch) {
+            "Cerca su Google Metascore reale su Metacritic (Switch o generale) e ore reali su HowLongToBeat."
+        } else {
+            "Usa la tua conoscenza storica per Metascore Metacritic (intero 1..100 se noto con buon grado di certezza, altrimenti null) e durata tipica HowLongToBeat (es. \"~18 ore\", \"~30 ore\", \"~50 ore\"). Non inventare URL specifici se non li sai con certezza (usa null per metacriticUrl se incerto)."
+        }
+
+        return """
+            Sei un critico videoludico esperto di Nintendo Switch e console portatili.
+            Analizza il gioco: "${deal.title}" ($cleanTitle, su $platformLabel, publisher ${deal.publisher}, generi/tag: [${tags.ifBlank { "n/d" }}], prezzo attuale €${"%.2f".format(deal.discountedPriceEur)} invece di €${"%.2f".format(deal.regularPriceEur)}, -${deal.discountPercent}%).
+
+            $dataSourceInstruction
+
+            PROFILO GUSTI UTENTE:
+            $profileSection
+
+            Rispondi ESCLUSIVAMENTE con un singolo oggetto JSON valido, senza testo extra:
+            {"metacriticScore":85,"metacriticUrl":"https://www.metacritic.com/...","hltbMainHours":"18 ore","hltbMainExtraHours":"30 ore","hltbCompletionistHours":"52 ore","verdict":"Consigliatissimo","summaryNote":"• Confronto gusti: ...\\n• Punti forti/rischi: ...\\n• Su Switch & prezzo: ..."}
+
+            Regole campi:
+            - `verdict`: UNA tra queste etichette brevi: "Imperdibile per te", "Consigliatissimo", "Buon affare", "Neutro / Misto", "Lascia perdere".
+            - `summaryNote`: 3 righe concise in italiano (60-110 parole totali) separate da `\n`:
+              1) `• Confronto gusti:` cita esplicitamente somiglianze o differenze con i giochi votati e le note dell'utente.
+              2) `• Gameplay & rischi:` cosa funziona davvero nel loop di gioco e possibili difetti o frustrazioni.
+              3) `• Su Switch & prezzo:` portabilità, resa tecnica su Switch/Switch 2 e rapporto qualità/prezzo a €${"%.2f".format(deal.discountedPriceEur)}.
+        """.trimIndent()
+    }
 
     internal fun parseGroundedPayload(rawText: String): GroundedInsightsPayload? {
         val cleaned = rawText
@@ -167,12 +368,39 @@ class GameInsightsClient(
     companion object {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
+        fun computeProfileSignature(
+            likedGames: List<LikedGame>,
+            userTastePrompt: String
+        ): String {
+            val lib = likedGames
+                .filter { it.rating != null || !it.userNote.isNullOrBlank() || it.isOwned }
+                .sortedBy { it.id }
+                .joinToString("|") {
+                    "${it.id}:${it.rating ?: 0}:${if (it.isOwned) 1 else 0}:${it.userNote.orEmpty().trim()}"
+                }
+            val raw = "$lib#${userTastePrompt.trim()}"
+            val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray())
+            return digest.joinToString("") { "%02x".format(it) }.take(16)
+        }
+
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(28, TimeUnit.SECONDS)
             .build()
     }
 }
+
+private enum class AiMode {
+    GROUNDED_SEARCH,
+    DIRECT_KNOWLEDGE,
+    NONE
+}
+
+private data class GeminiInsightsResult(
+    val payload: GroundedInsightsPayload?,
+    val mode: AiMode,
+    val errorMessage: String?
+)
 
 @Serializable
 internal data class GroundedInsightsPayload(
@@ -181,6 +409,7 @@ internal data class GroundedInsightsPayload(
     val hltbMainHours: String? = null,
     val hltbMainExtraHours: String? = null,
     val hltbCompletionistHours: String? = null,
+    val verdict: String? = null,
     val summaryNote: String? = null
 )
 

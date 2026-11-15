@@ -122,6 +122,7 @@ data class LikedGame(
     val excerpt: String? = null,
     val rating: Int? = 5,
     val isOwned: Boolean = false,
+    val userNote: String? = null,
     val addedAtMs: Long = 0L
 ) {
     val isPositiveRating: Boolean get() = (rating ?: 0) >= 4
@@ -136,8 +137,10 @@ data class GameExternalInsights(
     val hltbMainHours: String? = null,
     val hltbMainExtraHours: String? = null,
     val hltbCompletionistHours: String? = null,
+    val aiVerdict: String? = null,
     val summaryNote: String? = null,
     val sourceLabel: String = "",
+    val profileSignature: String = "",
     val fetchedAtMs: Long = 0L
 )
 
@@ -187,6 +190,7 @@ data class FilterSettings(
     val geminiModel: String = "gemini-4-hydrogen",
     val geminiStatusSummary: String = "",
     val geminiSignature: String = "",
+    val userTastePrompt: String = "",
     val githubRepo: String = "",
     val autoCheckUpdates: Boolean = true,
     val lastSyncEpochMs: Long = 0L

@@ -58,6 +58,7 @@ class PreferencesStore(private val context: Context) {
             geminiModel = prefs[KEY_GEMINI_MODEL]?.takeIf { it.isNotBlank() } ?: GeminiModels.HYDROGEN,
             geminiStatusSummary = prefs[KEY_GEMINI_STATUS_SUMMARY] ?: "",
             geminiSignature = prefs[KEY_GEMINI_SIGNATURE] ?: "",
+            userTastePrompt = prefs[KEY_USER_TASTE_PROMPT] ?: "",
             githubRepo = prefs[KEY_GITHUB_REPO] ?: BuildConfig.DEFAULT_GITHUB_REPO,
             autoCheckUpdates = prefs[KEY_AUTO_CHECK_UPDATES] ?: true,
             lastSyncEpochMs = prefs[KEY_LAST_SYNC_MS] ?: 0L
@@ -146,7 +147,7 @@ class PreferencesStore(private val context: Context) {
                 rating = cleanRating,
                 isOwned = nextOwned
             )
-            if (resolved.rating == null && !resolved.isOwned) null else resolved
+            if (resolved.rating == null && !resolved.isOwned && resolved.userNote.isNullOrBlank()) null else resolved
         }
     }
 
@@ -157,7 +158,21 @@ class PreferencesStore(private val context: Context) {
                 rating = nextRating,
                 isOwned = owned
             )
-            if (resolved.rating == null && !resolved.isOwned) null else resolved
+            if (resolved.rating == null && !resolved.isOwned && resolved.userNote.isNullOrBlank()) null else resolved
+        }
+    }
+
+    suspend fun setGameNote(game: LikedGame, note: String?) {
+        val cleanNote = note?.trim()?.take(240)?.takeIf { it.isNotEmpty() }
+        mutateLibraryGame(game) { existing ->
+            val nextRating = existing?.rating ?: game.rating
+            val nextOwned = existing?.isOwned ?: game.isOwned
+            val resolved = mergeGameMetadata(existing, game).copy(
+                rating = nextRating,
+                isOwned = nextOwned,
+                userNote = cleanNote
+            )
+            if (resolved.rating == null && !resolved.isOwned && resolved.userNote == null) null else resolved
         }
     }
 
@@ -189,8 +204,11 @@ class PreferencesStore(private val context: Context) {
                 current.add(0, updated)
             }
             prefs[KEY_LIKED_GAMES_JSON] = json.encodeToString(current)
-            // Rating/library edits invalidate previous AI cache signature if rating changed.
-            if (existing?.rating != updated?.rating) {
+            // Rating, note or ownership edits invalidate previous AI cache signature.
+            val aiRelevantChanged = existing?.rating != updated?.rating ||
+                existing?.userNote != updated?.userNote ||
+                existing?.isOwned != updated?.isOwned
+            if (aiRelevantChanged) {
                 prefs[KEY_GEMINI_SIGNATURE] = ""
             }
         }
@@ -199,6 +217,7 @@ class PreferencesStore(private val context: Context) {
     private fun mergeGameMetadata(existing: LikedGame?, incoming: LikedGame): LikedGame {
         if (existing == null) {
             return incoming.copy(
+                userNote = incoming.userNote?.trim()?.takeIf { it.isNotEmpty() },
                 addedAtMs = if (incoming.addedAtMs > 0L) incoming.addedAtMs else System.currentTimeMillis()
             )
         }
@@ -212,6 +231,8 @@ class PreferencesStore(private val context: Context) {
             steamTagIds = existing.steamTagIds.ifEmpty { incoming.steamTagIds },
             steamTagNames = existing.steamTagNames.ifEmpty { incoming.steamTagNames },
             excerpt = existing.excerpt ?: incoming.excerpt,
+            userNote = existing.userNote?.takeIf { it.isNotBlank() }
+                ?: incoming.userNote?.takeIf { it.isNotBlank() },
             addedAtMs = if (existing.addedAtMs > 0L) existing.addedAtMs else System.currentTimeMillis()
         )
     }
@@ -246,6 +267,14 @@ class PreferencesStore(private val context: Context) {
         context.dataStore.edit {
             it[KEY_GEMINI_STATUS_SUMMARY] = statusSummary
             it[KEY_GEMINI_SIGNATURE] = signature
+        }
+    }
+
+    suspend fun updateUserTastePrompt(prompt: String) {
+        val clean = prompt.trim().take(600)
+        context.dataStore.edit {
+            it[KEY_USER_TASTE_PROMPT] = clean
+            it[KEY_GEMINI_SIGNATURE] = ""
         }
     }
 
@@ -313,6 +342,7 @@ class PreferencesStore(private val context: Context) {
         private val KEY_GEMINI_MODEL = stringPreferencesKey("gemini_model")
         private val KEY_GEMINI_STATUS_SUMMARY = stringPreferencesKey("gemini_status_summary")
         private val KEY_GEMINI_SIGNATURE = stringPreferencesKey("gemini_signature")
+        private val KEY_USER_TASTE_PROMPT = stringPreferencesKey("user_taste_prompt")
         private val KEY_INSIGHTS_CACHE_JSON = stringPreferencesKey("insights_cache_json")
         private val KEY_GITHUB_REPO = stringPreferencesKey("github_repo")
         private val KEY_AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")

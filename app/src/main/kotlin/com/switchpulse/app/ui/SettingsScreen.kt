@@ -90,6 +90,7 @@ fun SettingsScreen(
     onSelectGeminiModel: (String) -> Unit,
     onTestGeminiConnection: (String) -> Unit,
     onRerankWithGeminiNow: () -> Unit,
+    onSaveUserTastePrompt: (String) -> Unit = {},
     onOpenLibraryTab: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -99,6 +100,9 @@ fun SettingsScreen(
     }
     var geminiKeyInput by remember(state.settings.geminiApiKey) {
         mutableStateOf(state.settings.geminiApiKey)
+    }
+    var tastePromptInput by remember(state.settings.userTastePrompt) {
+        mutableStateOf(state.settings.userTastePrompt)
     }
     var showGeminiKey by remember { mutableStateOf(false) }
 
@@ -217,7 +221,7 @@ fun SettingsScreen(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Consigliato: gemini-4-hydrogen (veloce, thinking low + Google Search per Metacritic e HowLongToBeat nella scheda gioco).",
+                    text = "Consigliato: gemini-4-hydrogen (ranking semantico sui top candidati + scheda critica personalizzata con stime Metacritic e HowLongToBeat).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -328,6 +332,52 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.padding(10.dp)
                         )
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                Text(
+                    text = "Preferenze personali per l'IA (opzionale)",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Descrivi cosa cerchi o vuoi evitare in generale: Gemini lo combinerà coi tuoi voti e commenti in Libreria.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = tastePromptInput,
+                    onValueChange = { if (it.length <= 600) tastePromptInput = it },
+                    label = { Text("Preferenze extra (es. generi, ritmo, portabilità)") },
+                    placeholder = { Text("Es. Amo roguelike tattici e metroidvania impegnativi; evito visual novel lunghe e farming simulator.") },
+                    minLines = 2,
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = { onSaveUserTastePrompt(tastePromptInput) },
+                        enabled = tastePromptInput.trim() != state.settings.userTastePrompt.trim(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Salva preferenze")
+                    }
+                    if (tastePromptInput.isNotBlank() || state.settings.userTastePrompt.isNotBlank()) {
+                        TextButton(
+                            onClick = {
+                                tastePromptInput = ""
+                                onSaveUserTastePrompt("")
+                            }
+                        ) {
+                            Text("Svuota")
+                        }
                     }
                 }
             }

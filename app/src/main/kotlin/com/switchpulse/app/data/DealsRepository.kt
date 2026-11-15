@@ -122,7 +122,8 @@ class DealsRepository(
         val signature = geminiReranker.computeSignature(
             modelId = settings.geminiModel,
             likedGames = settings.likedGames,
-            candidates = aiTargets
+            candidates = aiTargets,
+            userTastePrompt = settings.userTastePrompt
         )
         val hasCachedAi = aiTargets.any { it.aiAffinityScore != null }
         if (!force && signature == settings.geminiSignature && hasCachedAi) {
@@ -138,7 +139,8 @@ class DealsRepository(
             apiKey = settings.geminiApiKey,
             likedGames = settings.likedGames,
             candidates = aiTargets,
-            modelId = settings.geminiModel
+            modelId = settings.geminiModel,
+            userTastePrompt = settings.userTastePrompt
         )
         preferences.saveGeminiRunState(
             statusSummary = outcome.statusSummary,
@@ -173,21 +175,31 @@ class DealsRepository(
 
     suspend fun getOrFetchGameInsights(deal: Deal, forceRefresh: Boolean = false): GameExternalInsights {
         val sevenDaysMs = 7 * 24 * 60 * 60 * 1000L
+        val settings = preferences.getSettings()
+        val currentProfileSig = GameInsightsClient.computeProfileSignature(
+            likedGames = settings.likedGames,
+            userTastePrompt = settings.userTastePrompt
+        )
         if (!forceRefresh) {
             val cached = preferences.getCachedInsight(deal.id)
-            if (cached != null && System.currentTimeMillis() - cached.fetchedAtMs < sevenDaysMs) {
+            if (cached != null &&
+                cached.profileSignature == currentProfileSig &&
+                System.currentTimeMillis() - cached.fetchedAtMs < sevenDaysMs
+            ) {
                 return cached
             }
         }
-        val settings = preferences.getSettings()
         val fetched = insightsClient.fetchInsights(
             deal = deal,
             geminiApiKey = settings.geminiApiKey,
-            geminiModel = settings.geminiModel
+            geminiModel = settings.geminiModel,
+            likedGames = settings.likedGames,
+            userTastePrompt = settings.userTastePrompt
         )
         val hasUsefulData = fetched.metacriticScore != null ||
             !fetched.hltbMainHours.isNullOrBlank() ||
-            !fetched.summaryNote.isNullOrBlank()
+            !fetched.summaryNote.isNullOrBlank() ||
+            !fetched.aiVerdict.isNullOrBlank()
         if (hasUsefulData) {
             preferences.saveCachedInsight(fetched)
         }

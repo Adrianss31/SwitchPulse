@@ -97,7 +97,7 @@ object RecommendationEngine {
             settings.recommendationWeight.coerceIn(0, 100) / 100.0
         }
 
-        if ((positiveGames.isEmpty() && negativeGames.isEmpty()) || weightRatio <= 0.0) {
+        if ((positiveGames.isEmpty() && negativeGames.isEmpty() && settings.userTastePrompt.isBlank()) || weightRatio <= 0.0) {
             return deals.map { deal ->
                 deal.copy(
                     personalScore = deal.hotScore,
@@ -123,8 +123,8 @@ object RecommendationEngine {
         val negProfile = mergeVectors(negVectors.map { it.second.weights })
         val ratedByNormTitle = ratedGames.associateBy { DealTitleNormalizer.normalize(it.title) }
 
-        val maxBoost = if (settings.forYouOnlyMode) 56.0 else 28.0
-        val maxPenalty = if (settings.forYouOnlyMode) 60.0 else 32.0
+        val maxBoost = if (settings.forYouOnlyMode) 64.0 else 38.0
+        val maxPenalty = if (settings.forYouOnlyMode) 68.0 else 42.0
 
         return deals.map { deal ->
             val dealFeatures = buildFeatureVector(
@@ -143,7 +143,7 @@ object RecommendationEngine {
 
             val semanticCentered = deal.aiAffinityScore?.let { ((it - 50.0) / 50.0).coerceIn(-1.0, 1.0) }
             val combinedAffinity = if (semanticCentered != null) {
-                semanticCentered * 0.70 + localAffinity * 0.30
+                semanticCentered * 0.80 + localAffinity * 0.20
             } else {
                 localAffinity
             }

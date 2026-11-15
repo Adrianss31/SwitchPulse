@@ -70,16 +70,20 @@ class GeminiReranker(
     fun computeSignature(
         modelId: String,
         likedGames: List<LikedGame>,
-        candidates: List<Deal>
+        candidates: List<Deal>,
+        userTastePrompt: String = ""
     ): String {
-        val ratedSig = likedGames
-            .filter { it.isPositiveRating || it.isNegativeRating }
+        val librarySig = likedGames
+            .filter { it.rating != null || !it.userNote.isNullOrBlank() || it.isOwned }
             .sortedBy { it.id }
-            .joinToString("|") { "${it.id}:${it.rating}" }
+            .joinToString("|") {
+                "${it.id}:${it.rating ?: 0}:${if (it.isOwned) 1 else 0}:${it.userNote.orEmpty().trim()}"
+            }
         val candSig = candidates
             .take(MAX_CANDIDATES)
             .joinToString(",") { it.id }
-        val raw = "$modelId#$ratedSig#$candSig"
+        val promptSig = userTastePrompt.trim()
+        val raw = "$modelId#$librarySig#$promptSig#$candSig"
         val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }.take(24)
     }
@@ -88,11 +92,13 @@ class GeminiReranker(
         apiKey: String,
         likedGames: List<LikedGame>,
         candidates: List<Deal>,
-        modelId: String = GeminiModels.HYDROGEN
+        modelId: String = GeminiModels.HYDROGEN,
+        userTastePrompt: String = ""
     ): GeminiRerankOutcome = withContext(Dispatchers.IO) {
         val cleanKey = apiKey.trim()
         val effectiveModel = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
         val rated = likedGames.filter { it.isPositiveRating || it.isNegativeRating }
+        val cleanTastePrompt = userTastePrompt.trim()
 
         if (cleanKey.isBlank()) {
             return@withContext GeminiRerankOutcome(
@@ -101,10 +107,10 @@ class GeminiReranker(
                 isError = false
             )
         }
-        if (rated.isEmpty()) {
+        if (rated.isEmpty() && cleanTastePrompt.isBlank()) {
             return@withContext GeminiRerankOutcome(
                 scores = emptyMap(),
-                statusSummary = "Chiave salvata ($effectiveModel) · vota almeno un gioco (1–2★ o 4–5★) per attivare il rerank AI",
+                statusSummary = "Chiave salvata ($effectiveModel) · vota un gioco o scrivi le tue preferenze per attivare il rerank AI",
                 isError = false
             )
         }
@@ -118,7 +124,11 @@ class GeminiReranker(
 
         val topCandidates = candidates.take(MAX_CANDIDATES)
 
-        val prompt = buildPrompt(rated.take(20), topCandidates)
+        val prompt = buildPrompt(
+            likedGames = likedGames,
+            candidates = topCandidates,
+            userTastePrompt = cleanTastePrompt
+        )
         val requestBodyObj = GeminiGenerateRequest(
             contents = listOf(
                 GeminiContent(parts = listOf(GeminiPart(text = prompt)))
@@ -273,18 +283,34 @@ class GeminiReranker(
         return if (start >= 0 && end > start) text.substring(start, end + 1) else null
     }
 
-    private fun buildPrompt(ratedGames: List<LikedGame>, candidates: List<Deal>): String {
-        val positives = ratedGames.filter { it.isPositiveRating }.sortedByDescending { it.rating ?: 0 }
-        val negatives = ratedGames.filter { it.isNegativeRating }.sortedBy { it.rating ?: 0 }
+    private fun formatLibraryEntry(game: LikedGame): String {
+        val tags = (game.steamTagNames.take(5) + game.gameCategories).distinct().joinToString(", ")
+        val ratingLabel = game.rating?.let { "${it}★" } ?: "Posseduto"
+        val ownedSuffix = if (game.isOwned && game.rating != null) " · in libreria" else ""
+        val noteSuffix = game.userNote?.trim()?.takeIf { it.isNotEmpty() }?.let { " — Nota utente: \"$it\"" }.orEmpty()
+        return "- [$ratingLabel$ownedSuffix] ${game.title} [${tags.ifBlank { game.publisher }}]$noteSuffix"
+    }
 
-        val posText = if (positives.isEmpty()) "(nessuno)" else positives.joinToString("\n") { game ->
-            val tags = (game.steamTagNames.take(5) + game.gameCategories).distinct().joinToString(", ")
-            "- [${game.rating}★] ${game.title} [${tags.ifBlank { game.publisher }}]"
+    private fun buildPrompt(
+        likedGames: List<LikedGame>,
+        candidates: List<Deal>,
+        userTastePrompt: String
+    ): String {
+        val positives = likedGames.filter { it.isPositiveRating }.sortedByDescending { it.rating ?: 0 }.take(15)
+        val negatives = likedGames.filter { it.isNegativeRating }.sortedBy { it.rating ?: 0 }.take(10)
+        val neutralsAndBacklog = likedGames
+            .filter { !it.isPositiveRating && !it.isNegativeRating && (it.rating == 3 || it.isOwned || !it.userNote.isNullOrBlank()) }
+            .take(15)
+
+        val posText = if (positives.isEmpty()) "(nessuno)" else positives.joinToString("\n", transform = ::formatLibraryEntry)
+        val negText = if (negatives.isEmpty()) "(nessuno)" else negatives.joinToString("\n", transform = ::formatLibraryEntry)
+        val backlogText = if (neutralsAndBacklog.isEmpty()) "(nessuno)" else neutralsAndBacklog.joinToString("\n", transform = ::formatLibraryEntry)
+        val tasteSection = if (userTastePrompt.isBlank()) {
+            "(nessuna preferenza testuale extra)"
+        } else {
+            userTastePrompt
         }
-        val negText = if (negatives.isEmpty()) "(nessuno)" else negatives.joinToString("\n") { game ->
-            val tags = (game.steamTagNames.take(5) + game.gameCategories).distinct().joinToString(", ")
-            "- [${game.rating}★] ${game.title} [${tags.ifBlank { game.publisher }}]"
-        }
+
         val candidatesText = candidates.joinToString("\n") { deal ->
             val tags = (deal.steamTagNames.take(5) + deal.gameCategories).distinct().joinToString(", ")
             val acclaim = if (deal.steamReviewCount > 0 && deal.steamPositivePercent != null) {
@@ -301,21 +327,27 @@ class GeminiReranker(
         }
 
         return """
-            Sei un critico e curatore esperto di videogiochi Nintendo Switch. Valuta OGNI SINGOLO gioco in `OFFERTE CANDIDATE` confrontando gameplay loop, ritmo, profondità tattica, accessibilità e atmosfera rispetto ai gusti dell'utente.
+            Sei un critico e curatore esperto di videogiochi Nintendo Switch. Valuta OGNI SINGOLO gioco in `OFFERTE CANDIDATE` confrontando gameplay loop, ritmo, profondità tattica, accessibilità e atmosfera rispetto ai gusti dell'utente, alle sue note personali sui voti e al suo backlog.
             Scala score 0..100:
-            - 65..100: molto affine ai titoli 4-5★
+            - 65..100: molto affine ai titoli 4-5★ e alle preferenze dichiarate
             - 40..64: neutro, misto o interessante ma con compromessi
-            - 0..39: distante dai gusti o troppo vicino ai titoli 1-2★ sconsigliati
+            - 0..39: distante dai gusti o troppo vicino ai titoli 1-2★ sconsigliati (dai attenzione alle motivazioni nelle note utente)
 
             REGOLA FONDAMENTALE: restituisci un oggetto JSON per TUTTI e ${candidates.size} i titoli elencati (inclusi quelli neutri 40..64, NON omettere alcun `id`).
             Restituisci SOLO un array JSON valido con questo schema esatto:
-            [{"id":"<id>","score":<0..100>,"badge":"<3-6 parole sintetiche per lista>","analysis":"<2 frasi specifiche in italiano (25-45 parole): spiega le meccaniche reali del titolo, in cosa ricorda o differisce dai giochi 4-5★ o 1-2★ dell'utente e a chi/perché conviene su Switch>"}]
+            [{"id":"<id>","score":<0..100>,"badge":"<3-6 parole sintetiche per lista>","analysis":"<2 frasi specifiche in italiano (25-45 parole): spiega le meccaniche reali del titolo, in cosa ricorda o differisce dai giochi/note dell'utente e a chi/perché conviene su Switch>"}]
+
+            PREFERENZE TESTUALI UTENTE:
+            $tasteSection
 
             GIOCHI APPREZZATI (4-5★):
             $posText
 
             GIOCHI SCONSIGLIATI / NON PIACIUTI (1-2★):
             $negText
+
+            ALTRI GIOCHI IN LIBRERIA / BACKLOG / 3★ (evita ridondanze o ripetitività rispetto a ciò che ha già):
+            $backlogText
 
             OFFERTE CANDIDATE (${candidates.size} titoli):
             $candidatesText

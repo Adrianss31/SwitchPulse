@@ -18,10 +18,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.Refresh
@@ -39,18 +43,24 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -79,15 +89,20 @@ fun GameDetailSheet(
     onOpenEshop: (String) -> Unit,
     onSetRating: (Int?) -> Unit,
     onSetOwned: (Boolean) -> Unit,
+    onSetNote: (String?) -> Unit = {},
     onHideDeal: () -> Unit,
     onRefreshInsights: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val breakdown = remember(deal, settings.likedGames) {
+    val breakdown = remember(deal, settings.likedGames, settings.userTastePrompt) {
         RecommendationEngine.explainDeal(deal, settings)
     }
     val currentRating = libraryEntry?.rating
     val isOwned = libraryEntry?.isOwned == true
+    val savedNote = libraryEntry?.userNote.orEmpty()
+    var noteDraft by remember(deal.id, savedNote) { mutableStateOf(savedNote) }
+    val isNoteDirty = noteDraft.trim() != savedNote.trim()
+    val keyboard = LocalSoftwareKeyboardController.current
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -248,6 +263,58 @@ fun GameDetailSheet(
                             )
                         )
                     }
+
+                    OutlinedTextField(
+                        value = noteDraft,
+                        onValueChange = { if (it.length <= 240) noteDraft = it },
+                        label = { Text("Commento sul voto per Gemini (opzionale)") },
+                        placeholder = { Text("Es. mi piace lo stile tattico, odio il backtracking...") },
+                        maxLines = 3,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                keyboard?.hide()
+                                if (isNoteDirty) {
+                                    onSetNote(noteDraft.trim().takeIf { it.isNotEmpty() })
+                                }
+                            }
+                        ),
+                        trailingIcon = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isNoteDirty) {
+                                    IconButton(
+                                        onClick = {
+                                            keyboard?.hide()
+                                            onSetNote(noteDraft.trim().takeIf { it.isNotEmpty() })
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = "Salva commento",
+                                            tint = EshopCrimson
+                                        )
+                                    }
+                                }
+                                if (noteDraft.isNotBlank() || savedNote.isNotBlank()) {
+                                    IconButton(
+                                        onClick = {
+                                            noteDraft = ""
+                                            if (savedNote.isNotBlank()) {
+                                                onSetNote(null)
+                                            }
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Clear,
+                                            contentDescription = "Cancella commento"
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
 
@@ -477,12 +544,46 @@ fun GameDetailSheet(
                         }
                     }
 
+                    val verdict = insights?.aiVerdict?.takeIf { it.isNotBlank() }
+                    if (verdict != null) {
+                        val verdictBg = when {
+                            verdict.contains("Imperdibile", ignoreCase = true) ||
+                                verdict.contains("Consigliatissimo", ignoreCase = true) -> EshopCrimson
+                            verdict.contains("Buon", ignoreCase = true) -> Color(0xFF15803D)
+                            verdict.contains("Lascia", ignoreCase = true) -> Color(0xFF92400E)
+                            else -> MaterialTheme.colorScheme.surfaceContainerHighest
+                        }
+                        val verdictFg = if (verdictBg == MaterialTheme.colorScheme.surfaceContainerHighest) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            Color.White
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = verdictBg
+                        ) {
+                            Text(
+                                text = "Verdetto IA: $verdict",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = verdictFg,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
                     val note = insights?.summaryNote?.takeIf { it.isNotBlank() }
                     if (note != null) {
-                        Text(
-                            text = note,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = note,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
                     }
 
                     val source = insights?.sourceLabel?.takeIf { it.isNotBlank() }

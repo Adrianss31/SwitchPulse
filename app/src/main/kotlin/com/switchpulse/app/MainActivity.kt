@@ -253,6 +253,7 @@ private fun SwitchPulseRoot(
                 onClearSearchResults = viewModel::clearProfileSearchResults,
                 onSetGameRating = viewModel::setGameRating,
                 onSetGameOwned = viewModel::setGameOwned,
+                onSetGameNote = viewModel::setGameNote,
                 onRemoveGame = viewModel::removeLikedGame,
                 onOpenEshop = onOpenUrl,
                 modifier = Modifier.padding(innerPadding)
@@ -277,6 +278,7 @@ private fun SwitchPulseRoot(
                 onSelectGeminiModel = viewModel::setGeminiModel,
                 onTestGeminiConnection = { pending -> viewModel.testGeminiConnection(pending) },
                 onRerankWithGeminiNow = viewModel::rerankWithGeminiNow,
+                onSaveUserTastePrompt = viewModel::setUserTastePrompt,
                 onOpenLibraryTab = { selectedTab = 1 },
                 modifier = Modifier.padding(innerPadding)
             )
@@ -304,6 +306,9 @@ private fun SwitchPulseRoot(
                     if (owned) {
                         viewModel.closeDealDetail()
                     }
+                },
+                onSetNote = { note ->
+                    viewModel.setGameNote(existingEntry ?: activeDeal.toLikedGame(), note)
                 },
                 onHideDeal = { viewModel.hideDeal(activeDeal) },
                 onRefreshInsights = { viewModel.refreshDealInsights(activeDeal) }

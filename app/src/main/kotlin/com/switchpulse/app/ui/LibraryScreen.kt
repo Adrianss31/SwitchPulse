@@ -38,6 +38,7 @@ import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.CollectionsBookmark
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -107,6 +108,7 @@ fun LibraryScreen(
     onClearSearchResults: () -> Unit,
     onSetGameRating: (LikedGame, Int?) -> Unit,
     onSetGameOwned: (LikedGame, Boolean) -> Unit,
+    onSetGameNote: (LikedGame, String?) -> Unit = { _, _ -> },
     onRemoveGame: (String) -> Unit,
     onOpenEshop: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -186,6 +188,7 @@ fun LibraryScreen(
                     },
                     onSetRating = { nextRating -> onSetGameRating(item, nextRating) },
                     onToggleOwned = { onSetGameOwned(item, !item.isOwned) },
+                    onSetNote = { nextNote -> onSetGameNote(item, nextNote) },
                     onRemove = {
                         if (expandedGameId == item.id) expandedGameId = null
                         onRemoveGame(item.id)
@@ -522,11 +525,16 @@ private fun LibraryMatrixRow(
     onToggleExpand: () -> Unit,
     onSetRating: (Int?) -> Unit,
     onToggleOwned: () -> Unit,
+    onSetNote: (String?) -> Unit,
     onRemove: () -> Unit,
     onOpenEshop: (() -> Unit)?
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val goldStarColor = if (isDark) WarmGoldDark else WarmGoldLight
+    val keyboard = LocalSoftwareKeyboardController.current
+    var noteDraft by remember(game.id, game.userNote) { mutableStateOf(game.userNote.orEmpty()) }
+    val savedNote = game.userNote.orEmpty()
+    val isNoteDirty = noteDraft.trim() != savedNote.trim()
 
     Column(
         modifier = Modifier
@@ -618,6 +626,17 @@ private fun LibraryMatrixRow(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+
+                val savedQuote = game.userNote?.trim()?.takeIf { it.isNotEmpty() }
+                if (savedQuote != null && !expanded) {
+                    Text(
+                        text = "\"$savedQuote\"",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(10.dp))
@@ -702,56 +721,113 @@ private fun LibraryMatrixRow(
             }
         }
 
-        // Progressive inline rating & quick-actions strip (avoids unnecessary modals)
+        // Progressive inline rating, personal comment & quick-actions strip
         AnimatedVisibility(
             visible = expanded,
             enter = expandVertically() + fadeIn(),
             exit = shrinkVertically() + fadeOut()
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 12.dp, start = 66.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                RatingStarBar(
-                    rating = game.rating,
-                    onSelectRating = { clicked ->
-                        onSetRating(if (clicked == game.rating) null else clicked)
-                    },
-                    starSize = 30.dp
-                )
-
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (onOpenEshop != null) {
+                    RatingStarBar(
+                        rating = game.rating,
+                        onSelectRating = { clicked ->
+                            onSetRating(if (clicked == game.rating) null else clicked)
+                        },
+                        starSize = 30.dp
+                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        if (onOpenEshop != null) {
+                            IconButton(
+                                onClick = onOpenEshop,
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                                    contentDescription = "Apri su eShop",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                         IconButton(
-                            onClick = onOpenEshop,
+                            onClick = onRemove,
                             modifier = Modifier.size(40.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                contentDescription = "Apri su eShop",
+                                imageVector = Icons.Rounded.DeleteOutline,
+                                contentDescription = "Rimuovi dalla libreria",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(19.dp)
                             )
                         }
                     }
-                    IconButton(
-                        onClick = onRemove,
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.DeleteOutline,
-                            contentDescription = "Rimuovi dalla libreria",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
                 }
+
+                OutlinedTextField(
+                    value = noteDraft,
+                    onValueChange = { if (it.length <= 240) noteDraft = it },
+                    label = { Text("Perché questo voto? (commento per l'IA)") },
+                    placeholder = { Text("Es. adoro il combat tattico, troppo grinding...") },
+                    maxLines = 3,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            keyboard?.hide()
+                            if (isNoteDirty) {
+                                onSetNote(noteDraft.trim().takeIf { it.isNotEmpty() })
+                            }
+                        }
+                    ),
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (isNoteDirty) {
+                                IconButton(
+                                    onClick = {
+                                        keyboard?.hide()
+                                        onSetNote(noteDraft.trim().takeIf { it.isNotEmpty() })
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Check,
+                                        contentDescription = "Salva commento",
+                                        tint = EshopCrimson
+                                    )
+                                }
+                            }
+                            if (noteDraft.isNotBlank() || savedNote.isNotBlank()) {
+                                IconButton(
+                                    onClick = {
+                                        noteDraft = ""
+                                        if (savedNote.isNotBlank()) {
+                                            onSetNote(null)
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Clear,
+                                        contentDescription = "Cancella commento"
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }

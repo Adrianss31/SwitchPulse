@@ -173,4 +173,79 @@ class GeminiRerankerTest {
         assertEquals("Roguelike tattico ad alto ritmo", entry.reason)
         assertEquals(longAnalysis, entry.detailedReason)
     }
+
+    @Test
+    fun `rerank includes userNote, backlog owned titles and userTastePrompt in prompt and signature`() = runBlocking {
+        val body = """
+            {
+              "candidates": [
+                {
+                  "content": {
+                    "parts": [
+                      {
+                        "text": "[{\"id\":\"301\",\"score\":89,\"badge\":\"Boss fight e esplorazione\",\"analysis\":\"Molto affine ad Ori.\"}]"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(body))
+
+        val notedGames = listOf(
+            LikedGame(
+                id = "like-1",
+                title = "Ori and the Blind Forest",
+                steamTagNames = listOf("Metroidvania"),
+                rating = 5,
+                userNote = "Adoro i platform fluidi ma odio il grinding"
+            ),
+            LikedGame(
+                id = "owned-2",
+                title = "Dead Cells",
+                isOwned = true,
+                rating = null
+            )
+        )
+
+        val reranker = GeminiReranker(
+            httpClient = OkHttpClient(),
+            endpointBaseUrl = server.url("/v1beta/models/gemini-4-hydrogen:generateContent").toString()
+        )
+        val outcome = reranker.rerank(
+            apiKey = "AIzaTestKey",
+            likedGames = notedGames,
+            candidates = listOf(sampleDeal()),
+            modelId = GeminiModels.HYDROGEN,
+            userTastePrompt = "Preferisco giochi impegnativi ma rispettosi del tempo"
+        )
+
+        val requestJson = server.takeRequest().body.readUtf8()
+        assertTrue(requestJson.contains("Adoro i platform fluidi ma odio il grinding"))
+        assertTrue(requestJson.contains("Dead Cells"))
+        assertTrue(requestJson.contains("Preferisco giochi impegnativi ma rispettosi del tempo"))
+        assertEquals(89.0, outcome.scores.getValue("301").score, 0.001)
+
+        val sig1 = reranker.computeSignature(
+            GeminiModels.HYDROGEN,
+            notedGames,
+            listOf(sampleDeal()),
+            userTastePrompt = "A"
+        )
+        val sig2 = reranker.computeSignature(
+            GeminiModels.HYDROGEN,
+            notedGames,
+            listOf(sampleDeal()),
+            userTastePrompt = "B"
+        )
+        val sig3 = reranker.computeSignature(
+            GeminiModels.HYDROGEN,
+            listOf(notedGames[0].copy(userNote = "Nota diversa"), notedGames[1]),
+            listOf(sampleDeal()),
+            userTastePrompt = "A"
+        )
+        assertFalse(sig1 == sig2)
+        assertFalse(sig1 == sig3)
+    }
 }
