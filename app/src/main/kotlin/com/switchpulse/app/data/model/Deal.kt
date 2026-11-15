@@ -47,8 +47,36 @@ data class Deal(
     val endsAtIso: String?,
     val imageUrl: String?,
     val eshopUrl: String,
-    val popularityRank: Int
+    val popularityRank: Int,
+    val startsAtIso: String? = null,
+    val releasedAtIso: String? = null,
+    val chartRank: Int? = null,
+    val steamReviewCount: Int = 0,
+    val metacriticScore: Int? = null,
+    val hotScore: Double = 0.0
 )
+
+/**
+ * Shared title normalizer for cross-edition deduplication (SW1 vs SW2) and Steam matching.
+ */
+object DealTitleNormalizer {
+    private val TRADEMARKS = Regex("[™®©:]")
+    private val SWITCH_SUFFIX = Regex("\\s*[–\\-]\\s*nintendo switch.*$", RegexOption.IGNORE_CASE)
+    private val SWITCH_EDITION = Regex("\\s*nintendo switch.*edition.*$", RegexOption.IGNORE_CASE)
+    private val NON_ALNUM = Regex("[^a-z0-9 ]+")
+    private val MULTI_SPACE = Regex("\\s+")
+
+    fun normalize(title: String): String {
+        val cleaned = title.lowercase()
+            .replace(TRADEMARKS, "")
+            .replace(SWITCH_SUFFIX, "")
+            .replace(SWITCH_EDITION, "")
+            .replace(NON_ALNUM, " ")
+            .replace(MULTI_SPACE, " ")
+            .trim()
+        return cleaned.ifEmpty { title.lowercase().trim() }
+    }
+}
 
 data class FilterSettings(
     val minDiscountPercent: Int = 30,

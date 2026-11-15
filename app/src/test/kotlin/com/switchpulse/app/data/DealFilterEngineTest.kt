@@ -20,11 +20,13 @@ class DealFilterEngineTest {
         discounted: Double,
         pct: Int,
         rank: Int,
-        endsAtIso: String? = null
+        endsAtIso: String? = null,
+        title: String = "Game $id",
+        hotScore: Double = 0.0
     ) = Deal(
         id = id,
         nsuid = "70010000000$id",
-        title = "Game $id",
+        title = title,
         publisher = "Pub",
         platform = platform,
         regularPriceEur = regular,
@@ -33,7 +35,8 @@ class DealFilterEngineTest {
         endsAtIso = endsAtIso,
         imageUrl = null,
         eshopUrl = "https://www.nintendo.com/it-it/$id",
-        popularityRank = rank
+        popularityRank = rank,
+        hotScore = hotScore
     )
 
     @Test
@@ -80,5 +83,24 @@ class DealFilterEngineTest {
         assertTrue(DealFilterEngine.isUrgentExpiry(in10Hours, now))
         assertTrue(DealFilterEngine.isUrgentExpiry(in30Hours, now))
         assertFalse(DealFilterEngine.isUrgentExpiry(in5Days, now))
+    }
+
+    @Test
+    fun `filterTopTen sorts by hotScore when present and deduplicates editions per platform view`() {
+        val raw = listOf(
+            sampleDeal("101", Platform.SWITCH_1, 49.99, 24.99, 50, 5, title = "BALL x PIT", hotScore = 88.0),
+            sampleDeal("102", Platform.SWITCH_2, 49.99, 24.99, 50, 64, title = "BALL x PIT – Nintendo Switch™ 2 Edition", hotScore = 92.5),
+            sampleDeal("103", Platform.SWITCH_1, 39.99, 9.99, 75, 1, title = "Evergreen Old Sale", hotScore = 70.0)
+        )
+        val settings = FilterSettings(minDiscountPercent = 20, minRegularPriceEur = 5f)
+
+        val all = DealFilterEngine.filterTopTen(raw, settings, PlatformFilter.ALL)
+        assertEquals(listOf("102", "103"), all.map { it.id })
+
+        val sw1 = DealFilterEngine.filterTopTen(raw, settings, PlatformFilter.SWITCH_1)
+        assertEquals(listOf("101", "103"), sw1.map { it.id })
+
+        val sw2 = DealFilterEngine.filterTopTen(raw, settings, PlatformFilter.SWITCH_2)
+        assertEquals(listOf("102"), sw2.map { it.id })
     }
 }

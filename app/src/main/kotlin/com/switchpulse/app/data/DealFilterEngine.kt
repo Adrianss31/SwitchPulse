@@ -1,6 +1,7 @@
 package com.switchpulse.app.data
 
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.Platform
 import com.switchpulse.app.data.model.PlatformFilter
@@ -16,7 +17,8 @@ object DealFilterEngine {
         platformOverride: PlatformFilter = settings.appPlatformFilter,
         limit: Int = 10
     ): List<Deal> {
-        return rawDeals
+        val hasHotScores = rawDeals.any { it.hotScore > 0.0 }
+        val filtered = rawDeals
             .asSequence()
             .filter { deal -> deal.id !in settings.blacklistIds }
             .filter { deal -> deal.discountPercent >= settings.minDiscountPercent }
@@ -28,7 +30,21 @@ object DealFilterEngine {
                     PlatformFilter.SWITCH_1 -> deal.platform == Platform.SWITCH_1
                 }
             }
-            .sortedBy { it.popularityRank }
+
+        val ordered = if (hasHotScores) {
+            filtered.sortedWith(
+                compareByDescending<Deal> { it.hotScore }
+                    .thenByDescending { it.platform == Platform.SWITCH_2 }
+                    .thenBy { it.popularityRank }
+            )
+        } else {
+            filtered.sortedBy { it.popularityRank }
+        }
+
+        // Deduplicate cross-platform editions (e.g. Switch 1 + Switch 2 versions of the same title)
+        // after applying the platform filter so SW1 and SW2 tabs still show their respective edition.
+        return ordered
+            .distinctBy { deal -> DealTitleNormalizer.normalize(deal.title) }
             .take(limit)
             .toList()
     }
