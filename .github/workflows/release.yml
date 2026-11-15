@@ -46,7 +46,7 @@ jobs:
       - name: Compute monotonic version
         id: version
         run: |
-          CODE=$((1 + github.run_number))
+          CODE=$((1 + ${{ github.run_number }}))
           NAME="1.0.${CODE}"
           echo "code=${CODE}" >> "$GITHUB_OUTPUT"
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
