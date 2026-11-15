@@ -56,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.switchpulse.app.data.model.DealTitleNormalizer
+import com.switchpulse.app.ui.AiDiscoverySheet
 import com.switchpulse.app.ui.FeedScreen
 import com.switchpulse.app.ui.GameDetailSheet
 import com.switchpulse.app.ui.LibraryScreen
@@ -256,6 +257,9 @@ private fun SwitchPulseRoot(
                 onSetGameNote = viewModel::setGameNote,
                 onRemoveGame = viewModel::removeLikedGame,
                 onOpenEshop = onOpenUrl,
+                onGenerateGamerSoul = viewModel::generateGamerSoul,
+                onOpenDiscoverySheet = viewModel::openDiscoverySheet,
+                onRefreshDiscoveryPicks = { viewModel.discoverGamesForSoul(freshBatch = true) },
                 modifier = Modifier.padding(innerPadding)
             )
 
@@ -312,6 +316,20 @@ private fun SwitchPulseRoot(
                 },
                 onHideDeal = { viewModel.hideDeal(activeDeal) },
                 onRefreshInsights = { viewModel.refreshDealInsights(activeDeal) }
+            )
+        }
+
+        if (state.showDiscoverySheet) {
+            AiDiscoverySheet(
+                soulProfile = state.settings.gamerSoulProfile,
+                picks = state.settings.discoveryPicks,
+                library = state.settings.likedGames,
+                isLoading = state.isDiscoveringGames,
+                onDismiss = viewModel::dismissDiscoverySheet,
+                onRefreshPicks = { viewModel.discoverGamesForSoul(freshBatch = true) },
+                onOpenEshop = onOpenUrl,
+                onToggleOwned = viewModel::setGameOwned,
+                onQuickRate = { game, stars -> viewModel.setGameRating(game, stars) }
             )
         }
     }

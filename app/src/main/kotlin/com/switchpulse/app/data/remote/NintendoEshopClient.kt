@@ -1,6 +1,7 @@
 package com.switchpulse.app.data.remote
 
 import com.switchpulse.app.data.RecommendationEngine
+import com.switchpulse.app.data.model.AiDiscoveryPick
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.LikedGame
@@ -209,6 +210,57 @@ class NintendoEshopClient(
                 steamTagNames = steam.tagNames,
                 excerpt = steam.shortDescription ?: game.excerpt
             )
+        }
+    }
+
+    /**
+     * Resolves real Nintendo eShop cover artwork, URL, publisher and current pricing (discounted or full-price)
+     * for AI-recommended games so discovery picks render cleanly and link straight to eShop/Library.
+     */
+    suspend fun enrichDiscoveryPicks(picks: List<AiDiscoveryPick>): List<AiDiscoveryPick> = withContext(Dispatchers.IO) {
+        if (picks.isEmpty()) return@withContext emptyList()
+        val semaphore = Semaphore(4)
+        coroutineScope {
+            picks.map { pick ->
+                async(Dispatchers.IO) {
+                    val normTarget = DealTitleNormalizer.normalize(pick.title)
+                    val docs = runCatching {
+                        semaphore.withPermit {
+                            querySearch(
+                                q = normTarget,
+                                fq = "type:GAME AND (system_type:*nintendoswitch* OR system_type:*nintendoswitch2*)",
+                                rows = 4
+                            )
+                        }
+                    }.getOrDefault(emptyList())
+
+                    val matched = docs.firstOrNull { doc ->
+                        DealTitleNormalizer.normalize(doc.title.orEmpty()) == normTarget
+                    } ?: docs.firstOrNull { doc ->
+                        val docNorm = DealTitleNormalizer.normalize(doc.title.orEmpty())
+                        docNorm.contains(normTarget) || normTarget.contains(docNorm)
+                    } ?: docs.firstOrNull()
+
+                    if (matched == null) {
+                        pick
+                    } else {
+                        val regular = matched.priceRegularF?.takeIf { it > 0.0 }
+                        val discounted = matched.priceDiscountedF?.takeIf { it > 0.0 }
+                        val pct = matched.priceDiscountPercentageF?.toInt()?.coerceIn(0, 99) ?: 0
+                        val activePrice = if (pct > 0 && discounted != null) discounted else regular
+                        pick.copy(
+                            eshopId = matched.fsId?.takeIf { it.isNotBlank() },
+                            publisher = matched.publisher?.trim().orEmpty(),
+                            imageUrl = resolveDocImageUrl(matched),
+                            eshopUrl = DealTitleNormalizer.resolveNintendoEshopUrl(matched.url),
+                            gameCategories = matched.gameCategoriesTxt.orEmpty().map { it.lowercase() },
+                            regularPriceEur = regular,
+                            currentPriceEur = activePrice,
+                            discountPercent = pct
+                        )
+                    }
+                }
+            }.awaitAll()
         }
     }
 

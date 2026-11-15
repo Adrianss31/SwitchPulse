@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -36,12 +38,14 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.CollectionsBookmark
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.Button
@@ -81,6 +85,7 @@ import coil3.compose.AsyncImage
 import com.switchpulse.app.data.RecommendationEngine
 import com.switchpulse.app.data.TasteGenreBar
 import com.switchpulse.app.data.model.DealTitleNormalizer
+import com.switchpulse.app.data.model.GamerSoulProfile
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.ui.theme.EshopCrimson
 import com.switchpulse.app.ui.theme.EshopCrimsonSoft
@@ -111,6 +116,9 @@ fun LibraryScreen(
     onSetGameNote: (LikedGame, String?) -> Unit = { _, _ -> },
     onRemoveGame: (String) -> Unit,
     onOpenEshop: (String) -> Unit,
+    onGenerateGamerSoul: () -> Unit = {},
+    onOpenDiscoverySheet: () -> Unit = {},
+    onRefreshDiscoveryPicks: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var activeFilter by remember { mutableStateOf(LibraryFilter.ALL) }
@@ -153,6 +161,22 @@ fun LibraryScreen(
                 },
                 onOpenAddGameSheet = onOpenAddGameSheet,
                 modifier = Modifier.padding(horizontal = 16.dp)
+            )
+        }
+
+        // Gamer Soul & Standalone AI Game Discovery Card
+        item(key = "gamer_soul_card") {
+            GamerSoulBentoCard(
+                soulProfile = state.settings.gamerSoulProfile,
+                discoveryCount = state.settings.discoveryPicks.size,
+                hasApiKey = state.settings.geminiApiKey.isNotBlank(),
+                hasLibrarySignals = library.isNotEmpty() || state.settings.userTastePrompt.isNotBlank(),
+                isGeneratingSoul = state.isGeneratingSoul,
+                isDiscoveringGames = state.isDiscoveringGames,
+                onGenerateSoul = onGenerateGamerSoul,
+                onOpenDiscovery = onOpenDiscoverySheet,
+                onRefreshDiscovery = onRefreshDiscoveryPicks,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
             )
         }
 
@@ -215,6 +239,245 @@ fun LibraryScreen(
             onSetGameRating = onSetGameRating,
             onSetGameOwned = onSetGameOwned
         )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GamerSoulBentoCard(
+    soulProfile: GamerSoulProfile?,
+    discoveryCount: Int,
+    hasApiKey: Boolean,
+    hasLibrarySignals: Boolean,
+    isGeneratingSoul: Boolean,
+    isDiscoveringGames: Boolean,
+    onGenerateSoul: () -> Unit,
+    onOpenDiscovery: () -> Unit,
+    onRefreshDiscovery: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        tint = EshopCrimson,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "ANIMA DA VIDEOGIOCATORE · AI",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                if (soulProfile != null) {
+                    FilledTonalButton(
+                        onClick = onGenerateSoul,
+                        enabled = !isGeneratingSoul && hasApiKey && hasLibrarySignals,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.height(34.dp)
+                    ) {
+                        if (isGeneratingSoul) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Rounded.Refresh,
+                                contentDescription = "Aggiorna anima",
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = "Aggiorna",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (soulProfile == null) {
+                Text(
+                    text = "L'IA analizza i giochi nella tua libreria, i voti 1–5★, i commenti personali e le tue preferenze per estrapolare chi sei come videogiocatore.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (!hasApiKey) {
+                    Text(
+                        text = "Configura una chiave Gemini in Impostazioni per sbloccare il profilo e i consigli personalizzati.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = EshopCrimson
+                    )
+                } else if (!hasLibrarySignals) {
+                    Text(
+                        text = "Aggiungi o vota almeno un titolo (oppure scrivi le tue preferenze qui sotto) per iniziare.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                Button(
+                    onClick = onGenerateSoul,
+                    enabled = !isGeneratingSoul && hasApiKey && hasLibrarySignals,
+                    colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isGeneratingSoul) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Analisi dell'anima in corso...")
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.AutoAwesome,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Estrai la tua Anima")
+                    }
+                }
+            } else {
+                Text(
+                    text = soulProfile.archetypeTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Text(
+                    text = soulProfile.soulSummary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (soulProfile.corePillars.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        soulProfile.corePillars.forEach { pillar ->
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                            ) {
+                                Text(
+                                    text = pillar,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (soulProfile.redFlags.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        soulProfile.redFlags.forEach { flag ->
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+                            ) {
+                                Text(
+                                    text = "✕ $flag",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = onOpenDiscovery,
+                        enabled = !isDiscoveringGames && hasApiKey,
+                        colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (isDiscoveringGames) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Cerco titoli su misura...")
+                        } else {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = if (discoveryCount == 0) {
+                                    "Consigliami 5–10 giochi"
+                                } else {
+                                    "Vedi $discoveryCount consigli per te"
+                                }
+                            )
+                        }
+                    }
+
+                    if (discoveryCount > 0) {
+                        FilledTonalButton(
+                            onClick = onRefreshDiscovery,
+                            enabled = !isDiscoveringGames && hasApiKey,
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Refresh,
+                                contentDescription = "Nuovi consigli",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("Nuovi")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

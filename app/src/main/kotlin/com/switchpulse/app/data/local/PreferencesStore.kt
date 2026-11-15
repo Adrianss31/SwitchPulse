@@ -12,10 +12,12 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.switchpulse.app.BuildConfig
+import com.switchpulse.app.data.model.AiDiscoveryPick
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
+import com.switchpulse.app.data.model.GamerSoulProfile
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.PlatformFilter
 import com.switchpulse.app.data.remote.GeminiModels
@@ -42,6 +44,12 @@ class PreferencesStore(private val context: Context) {
         }.getOrDefault(emptyMap())
 
         val likedGames = readLikedList(prefs[KEY_LIKED_GAMES_JSON])
+        val gamerSoul = prefs[KEY_GAMER_SOUL_JSON]?.takeIf { it.isNotBlank() }?.let { raw ->
+            runCatching { json.decodeFromString<GamerSoulProfile>(raw) }.getOrNull()
+        }
+        val discoveryPicks = prefs[KEY_AI_DISCOVERY_JSON]?.takeIf { it.isNotBlank() }?.let { raw ->
+            runCatching { json.decodeFromString<List<AiDiscoveryPick>>(raw) }.getOrDefault(emptyList())
+        }.orEmpty()
 
         FilterSettings(
             minDiscountPercent = prefs[KEY_MIN_DISCOUNT] ?: 30,
@@ -59,6 +67,8 @@ class PreferencesStore(private val context: Context) {
             geminiStatusSummary = prefs[KEY_GEMINI_STATUS_SUMMARY] ?: "",
             geminiSignature = prefs[KEY_GEMINI_SIGNATURE] ?: "",
             userTastePrompt = prefs[KEY_USER_TASTE_PROMPT] ?: "",
+            gamerSoulProfile = gamerSoul,
+            discoveryPicks = discoveryPicks,
             githubRepo = prefs[KEY_GITHUB_REPO] ?: BuildConfig.DEFAULT_GITHUB_REPO,
             autoCheckUpdates = prefs[KEY_AUTO_CHECK_UPDATES] ?: true,
             lastSyncEpochMs = prefs[KEY_LAST_SYNC_MS] ?: 0L
@@ -278,6 +288,26 @@ class PreferencesStore(private val context: Context) {
         }
     }
 
+    suspend fun saveGamerSoulProfile(profile: GamerSoulProfile?) {
+        context.dataStore.edit {
+            if (profile == null) {
+                it.remove(KEY_GAMER_SOUL_JSON)
+            } else {
+                it[KEY_GAMER_SOUL_JSON] = json.encodeToString(profile)
+            }
+        }
+    }
+
+    suspend fun saveDiscoveryPicks(picks: List<AiDiscoveryPick>) {
+        context.dataStore.edit {
+            if (picks.isEmpty()) {
+                it.remove(KEY_AI_DISCOVERY_JSON)
+            } else {
+                it[KEY_AI_DISCOVERY_JSON] = json.encodeToString(picks)
+            }
+        }
+    }
+
     suspend fun getCachedInsight(dealId: String): GameExternalInsights? {
         val raw = context.dataStore.data.first()[KEY_INSIGHTS_CACHE_JSON].orEmpty()
         if (raw.isBlank()) return null
@@ -343,6 +373,8 @@ class PreferencesStore(private val context: Context) {
         private val KEY_GEMINI_STATUS_SUMMARY = stringPreferencesKey("gemini_status_summary")
         private val KEY_GEMINI_SIGNATURE = stringPreferencesKey("gemini_signature")
         private val KEY_USER_TASTE_PROMPT = stringPreferencesKey("user_taste_prompt")
+        private val KEY_GAMER_SOUL_JSON = stringPreferencesKey("gamer_soul_json")
+        private val KEY_AI_DISCOVERY_JSON = stringPreferencesKey("ai_discovery_json")
         private val KEY_INSIGHTS_CACHE_JSON = stringPreferencesKey("insights_cache_json")
         private val KEY_GITHUB_REPO = stringPreferencesKey("github_repo")
         private val KEY_AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")

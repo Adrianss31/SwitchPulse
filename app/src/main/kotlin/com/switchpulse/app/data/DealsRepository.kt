@@ -4,12 +4,15 @@ import android.content.Context
 import androidx.glance.appwidget.updateAll
 import com.switchpulse.app.data.local.CoverBitmapCache
 import com.switchpulse.app.data.local.PreferencesStore
+import com.switchpulse.app.data.model.AiDiscoveryPick
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
+import com.switchpulse.app.data.model.GamerSoulProfile
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.remote.GameInsightsClient
 import com.switchpulse.app.data.remote.GeminiReranker
+import com.switchpulse.app.data.remote.GeminiSoulClient
 import com.switchpulse.app.data.remote.NintendoEshopClient
 import com.switchpulse.app.widget.EditorialBentoWidget
 import kotlinx.coroutines.flow.Flow
@@ -21,6 +24,7 @@ class DealsRepository(
     private val eshopClient: NintendoEshopClient = NintendoEshopClient(),
     private val geminiReranker: GeminiReranker = GeminiReranker(),
     private val insightsClient: GameInsightsClient = GameInsightsClient(),
+    private val soulClient: GeminiSoulClient = GeminiSoulClient(),
     val coverCache: CoverBitmapCache = CoverBitmapCache(context)
 ) {
     val settingsFlow: Flow<FilterSettings> = preferences.settingsFlow
@@ -208,6 +212,51 @@ class DealsRepository(
 
     suspend fun searchGamesForProfile(query: String): List<LikedGame> {
         return eshopClient.searchGamesForProfile(query)
+    }
+
+    suspend fun generateGamerSoul(): Result<GamerSoulProfile> {
+        val settings = preferences.getSettings()
+        val result = soulClient.generateGamerSoul(
+            apiKey = settings.geminiApiKey,
+            likedGames = settings.likedGames,
+            modelId = settings.geminiModel,
+            userTastePrompt = settings.userTastePrompt
+        )
+        result.onSuccess { profile ->
+            preferences.saveGamerSoulProfile(profile)
+        }
+        return result
+    }
+
+    suspend fun discoverGamesForSoul(freshBatch: Boolean = false): Result<List<AiDiscoveryPick>> {
+        val settings = preferences.getSettings()
+        val expectedSig = soulClient.computeSignature(
+            modelId = settings.geminiModel,
+            likedGames = settings.likedGames,
+            userTastePrompt = settings.userTastePrompt
+        )
+        val soulProfile = if (settings.gamerSoulProfile != null &&
+            settings.gamerSoulProfile.signature == expectedSig
+        ) {
+            settings.gamerSoulProfile
+        } else {
+            val generated = generateGamerSoul()
+            generated.getOrElse { return Result.failure(it) }
+        }
+
+        val previousTitles = if (freshBatch) settings.discoveryPicks.map { it.title } else emptyList()
+        val picksResult = soulClient.discoverGamesForSoul(
+            apiKey = settings.geminiApiKey,
+            soulProfile = soulProfile,
+            likedGames = settings.likedGames,
+            modelId = settings.geminiModel,
+            userTastePrompt = settings.userTastePrompt,
+            excludePreviousTitles = previousTitles
+        )
+        val rawPicks = picksResult.getOrElse { return Result.failure(it) }
+        val enriched = runCatching { eshopClient.enrichDiscoveryPicks(rawPicks) }.getOrDefault(rawPicks)
+        preferences.saveDiscoveryPicks(enriched)
+        return Result.success(enriched)
     }
 
     suspend fun notifyWidgetChanged() {

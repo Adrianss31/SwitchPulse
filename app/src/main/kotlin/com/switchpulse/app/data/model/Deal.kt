@@ -175,6 +175,52 @@ object DealTitleNormalizer {
     }
 }
 
+@Serializable
+data class GamerSoulProfile(
+    val archetypeTitle: String = "",
+    val soulSummary: String = "",
+    val corePillars: List<String> = emptyList(),
+    val redFlags: List<String> = emptyList(),
+    val signature: String = "",
+    val generatedAtMs: Long = 0L
+)
+
+@Serializable
+data class AiDiscoveryPick(
+    val title: String,
+    val pitchHook: String = "",
+    val reason: String = "",
+    val estimatedPriceHint: String = "",
+    val eshopId: String? = null,
+    val publisher: String = "",
+    val imageUrl: String? = null,
+    val eshopUrl: String? = null,
+    val gameCategories: List<String> = emptyList(),
+    val steamTagIds: List<Int> = emptyList(),
+    val steamTagNames: List<String> = emptyList(),
+    val currentPriceEur: Double? = null,
+    val regularPriceEur: Double? = null,
+    val discountPercent: Int = 0
+) {
+    fun toLikedGame(rating: Int? = null, isOwned: Boolean = false): LikedGame {
+        val resolvedId = eshopId?.takeIf { it.isNotBlank() }
+            ?: "discovery_${DealTitleNormalizer.normalize(title).replace(' ', '_')}"
+        return LikedGame(
+            id = resolvedId,
+            title = title,
+            publisher = publisher,
+            imageUrl = imageUrl,
+            eshopUrl = eshopUrl,
+            gameCategories = gameCategories,
+            steamTagIds = steamTagIds,
+            steamTagNames = steamTagNames,
+            excerpt = reason.takeIf { it.isNotBlank() },
+            rating = rating,
+            isOwned = isOwned
+        )
+    }
+}
+
 data class FilterSettings(
     val minDiscountPercent: Int = 30,
     val minRegularPriceEur: Float = 10f,
@@ -191,6 +237,8 @@ data class FilterSettings(
     val geminiStatusSummary: String = "",
     val geminiSignature: String = "",
     val userTastePrompt: String = "",
+    val gamerSoulProfile: GamerSoulProfile? = null,
+    val discoveryPicks: List<AiDiscoveryPick> = emptyList(),
     val githubRepo: String = "",
     val autoCheckUpdates: Boolean = true,
     val lastSyncEpochMs: Long = 0L

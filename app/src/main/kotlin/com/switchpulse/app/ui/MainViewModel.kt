@@ -48,7 +48,10 @@ data class MainUiState(
     val detailInsights: GameExternalInsights? = null,
     val isLoadingInsights: Boolean = false,
     val geminiTestResult: String? = null,
-    val isTestingGemini: Boolean = false
+    val isTestingGemini: Boolean = false,
+    val isGeneratingSoul: Boolean = false,
+    val isDiscoveringGames: Boolean = false,
+    val showDiscoverySheet: Boolean = false
 )
 
 private data class TransientUiState(
@@ -62,7 +65,10 @@ private data class TransientUiState(
     val detailInsights: GameExternalInsights? = null,
     val isLoadingInsights: Boolean = false,
     val geminiTestResult: String? = null,
-    val isTestingGemini: Boolean = false
+    val isTestingGemini: Boolean = false,
+    val isGeneratingSoul: Boolean = false,
+    val isDiscoveringGames: Boolean = false,
+    val showDiscoverySheet: Boolean = false
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -94,7 +100,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             detailInsights = transient.detailInsights,
             isLoadingInsights = transient.isLoadingInsights,
             geminiTestResult = transient.geminiTestResult,
-            isTestingGemini = transient.isTestingGemini
+            isTestingGemini = transient.isTestingGemini,
+            isGeneratingSoul = transient.isGeneratingSoul,
+            isDiscoveringGames = transient.isDiscoveringGames,
+            showDiscoverySheet = transient.showDiscoverySheet
         )
     }.stateIn(
         scope = viewModelScope,
@@ -263,6 +272,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             transientState.update { it.copy(statusMessage = msg) }
         }
+    }
+
+    fun generateGamerSoul() {
+        if (transientState.value.isGeneratingSoul) return
+        viewModelScope.launch {
+            transientState.update { it.copy(isGeneratingSoul = true) }
+            val result = repository.generateGamerSoul()
+            val msg = result.fold(
+                onSuccess = { profile -> "✨ Anima aggiornata: ${profile.archetypeTitle}" },
+                onFailure = { err -> "⚠️ ${err.message ?: "Impossibile generare il profilo"}" }
+            )
+            transientState.update { it.copy(isGeneratingSoul = false, statusMessage = msg) }
+        }
+    }
+
+    fun openDiscoverySheet() {
+        val hasCached = uiState.value.settings.discoveryPicks.isNotEmpty()
+        if (hasCached) {
+            transientState.update { it.copy(showDiscoverySheet = true) }
+        } else {
+            discoverGamesForSoul(freshBatch = false)
+        }
+    }
+
+    fun discoverGamesForSoul(freshBatch: Boolean = false) {
+        if (transientState.value.isDiscoveringGames) return
+        viewModelScope.launch {
+            transientState.update { it.copy(showDiscoverySheet = true, isDiscoveringGames = true) }
+            val result = repository.discoverGamesForSoul(freshBatch = freshBatch)
+            val errMsg = result.exceptionOrNull()?.message
+            transientState.update {
+                it.copy(
+                    isDiscoveringGames = false,
+                    statusMessage = errMsg?.let { msg -> "⚠️ $msg" } ?: it.statusMessage
+                )
+            }
+        }
+    }
+
+    fun dismissDiscoverySheet() {
+        transientState.update { it.copy(showDiscoverySheet = false) }
     }
 
     fun searchProfileGames(query: String) {
