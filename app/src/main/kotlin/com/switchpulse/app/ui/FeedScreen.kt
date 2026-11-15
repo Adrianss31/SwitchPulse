@@ -20,6 +20,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.Button
@@ -33,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.switchpulse.app.data.DealFilterEngine
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.Platform
 import com.switchpulse.app.data.model.PlatformFilter
 import com.switchpulse.app.ui.theme.EshopCrimson
@@ -58,11 +62,20 @@ fun FeedScreen(
     onSelectPlatform: (PlatformFilter) -> Unit,
     onOpenDeal: (Deal) -> Unit,
     onHideDeal: (Deal) -> Unit,
+    onToggleLike: (Deal) -> Unit,
+    onToggleForYou: (Boolean) -> Unit,
     onRefresh: () -> Unit,
     onResetFilters: () -> Unit,
     onOpenUpdateTab: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val likedIds = remember(state.settings.likedGames) {
+        state.settings.likedGames.map { it.id }.toSet()
+    }
+    val likedNormTitles = remember(state.settings.likedGames) {
+        state.settings.likedGames.map { DealTitleNormalizer.normalize(it.title) }.toSet()
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         // Segmented filter row
         Row(
@@ -106,11 +119,44 @@ fun FeedScreen(
                 }
             }
 
-            Text(
-                text = "Top ${state.deals.size}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (state.settings.likedGames.isNotEmpty()) {
+                    val forYouActive = state.settings.forYouOnlyMode
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(
+                                if (forYouActive) EshopCrimson
+                                else MaterialTheme.colorScheme.surfaceContainerHigh
+                            )
+                            .clickable { onToggleForYou(!forYouActive) }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (forYouActive) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            contentDescription = "Solo Per Te",
+                            tint = if (forYouActive) Color.White else EshopCrimson,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = "Per Te",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (forYouActive) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Top ${state.deals.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         // Update available banner
@@ -255,18 +301,25 @@ fun FeedScreen(
                     }
 
                     item(key = "hero_${hero.id}") {
+                        val isLiked = hero.id in likedIds || DealTitleNormalizer.normalize(hero.title) in likedNormTitles
                         HeroDealCard(
                             deal = hero,
+                            isLiked = isLiked,
+                            forYouMode = state.settings.forYouOnlyMode,
                             onClick = { onOpenDeal(hero) },
+                            onToggleLike = { onToggleLike(hero) },
                             onHide = { onHideDeal(hero) }
                         )
                     }
 
                     itemsIndexed(rest, key = { _, d -> d.id }) { idx, deal ->
+                        val isLiked = deal.id in likedIds || DealTitleNormalizer.normalize(deal.title) in likedNormTitles
                         DealRowCard(
                             rank = idx + 2,
                             deal = deal,
+                            isLiked = isLiked,
                             onClick = { onOpenDeal(deal) },
+                            onToggleLike = { onToggleLike(deal) },
                             onHide = { onHideDeal(deal) }
                         )
                     }
@@ -279,7 +332,10 @@ fun FeedScreen(
 @Composable
 private fun HeroDealCard(
     deal: Deal,
+    isLiked: Boolean,
+    forYouMode: Boolean,
     onClick: () -> Unit,
+    onToggleLike: () -> Unit,
     onHide: () -> Unit
 ) {
     Box(
@@ -323,7 +379,11 @@ private fun HeroDealCard(
                 color = Color(0x99000000)
             ) {
                 Text(
-                    text = "#1 Popolare · ${deal.platform.displayName}",
+                    text = if (forYouMode && deal.matchReason != null) {
+                        "#1 Per te · ${deal.platform.displayName}"
+                    } else {
+                        "#1 Popolare · ${deal.platform.displayName}"
+                    },
                     color = Color.White,
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
@@ -341,6 +401,22 @@ private fun HeroDealCard(
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(if (isLiked) EshopCrimson else Color(0x88000000))
+                        .clickable(onClick = onToggleLike),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                        contentDescription = if (isLiked) "Rimuovi dai preferiti" else "Mi piace",
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
                     )
                 }
 
@@ -371,6 +447,23 @@ private fun HeroDealCard(
             verticalAlignment = Alignment.Bottom
         ) {
             Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                if (deal.matchReason != null) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = EshopCrimson.copy(alpha = 0.88f),
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    ) {
+                        Text(
+                            text = deal.matchReason,
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                        )
+                    }
+                }
                 Text(
                     text = deal.title,
                     color = Color.White,
@@ -420,7 +513,9 @@ private fun HeroDealCard(
 private fun DealRowCard(
     rank: Int,
     deal: Deal,
+    isLiked: Boolean,
     onClick: () -> Unit,
+    onToggleLike: () -> Unit,
     onHide: () -> Unit
 ) {
     Surface(
@@ -505,6 +600,16 @@ private fun DealRowCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textDecoration = TextDecoration.LineThrough
                 )
+                if (deal.matchReason != null) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = deal.matchReason,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                        color = if (MaterialTheme.colorScheme.background.red < 0.3f) EshopCrimsonSoft else EshopCrimson,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(8.dp))
@@ -528,6 +633,18 @@ private fun DealRowCard(
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
+            }
+
+            IconButton(
+                onClick = onToggleLike,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                    contentDescription = if (isLiked) "Rimuovi dai preferiti" else "Mi piace",
+                    tint = if (isLiked) EshopCrimson else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
             }
 
             IconButton(

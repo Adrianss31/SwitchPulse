@@ -183,13 +183,59 @@ class NintendoEshopClientTest {
                         }
                         MockResponse().setResponseCode(200).setBody(body)
                     }
-                    path.endsWith("/api/appdetails") -> {
-                        val appId = url.queryParameter("appids").orEmpty()
-                        val body = when (appId) {
-                            "2062430" -> """{"2062430":{"data":{"type":"game","recommendations":{"total":25548}}}}"""
-                            "2909400" -> """{"2909400":{"data":{"type":"game","recommendations":{"total":27056},"metacritic":{"score":89}}}}"""
-                            else -> "{}"
-                        }
+                    path.endsWith("/IStoreBrowseService/GetItems/v1/") -> {
+                        val body = """
+                            {
+                              "response": {
+                                "store_items": [
+                                  {
+                                    "appid": 2062430,
+                                    "basic_info": {
+                                      "short_description": "Brick-breaking roguelite survival arena",
+                                      "developers": [{ "name": "Kenny Sun" }]
+                                    },
+                                    "tagids": [3959, 1716, 4885],
+                                    "reviews": {
+                                      "summary_filtered": {
+                                        "review_count": 25548,
+                                        "percent_positive": 95
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "appid": 2909400,
+                                    "basic_info": {
+                                      "short_description": "Action JRPG epic sequel",
+                                      "developers": [{ "name": "Square Enix" }]
+                                    },
+                                    "tagids": [122, 4434],
+                                    "reviews": {
+                                      "summary_filtered": {
+                                        "review_count": 27056,
+                                        "percent_positive": 91
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                        """.trimIndent()
+                        MockResponse().setResponseCode(200).setBody(body)
+                    }
+                    path.endsWith("/IStoreService/GetTagList/v1/") -> {
+                        val body = """
+                            {
+                              "response": {
+                                "tags": [
+                                  { "tagid": 3959, "name": "Roguelite" },
+                                  { "tagid": 1716, "name": "Roguelike" },
+                                  { "tagid": 4885, "name": "Inferno di proiettili" },
+                                  { "tagid": 122, "name": "GDR" },
+                                  { "tagid": 4434, "name": "JRPG" }
+                                ]
+                              }
+                            }
+                        """.trimIndent()
                         MockResponse().setResponseCode(200).setBody(body)
                     }
                     else -> MockResponse().setResponseCode(404)
@@ -204,7 +250,8 @@ class NintendoEshopClientTest {
             priceBaseUrl = server.url("/v1/price").toString(),
             chartsUrl = server.url("/charts").toString(),
             steamSearchUrl = server.url("/api/storesearch/").toString(),
-            steamAppDetailsUrl = server.url("/api/appdetails").toString(),
+            steamBrowseItemsUrl = server.url("/IStoreBrowseService/GetItems/v1/").toString(),
+            steamTagListUrl = server.url("/IStoreService/GetTagList/v1/").toString(),
             clock = fixedClock
         )
 
@@ -219,7 +266,9 @@ class NintendoEshopClientTest {
         assertEquals(8.99, ff7.discountedPriceEur, 0.001)
         assertEquals(85, ff7.discountPercent)
         assertEquals(27056, ff7.steamReviewCount)
-        assertEquals(89, ff7.metacriticScore)
+        assertEquals(91, ff7.steamPositivePercent)
+        assertEquals("Square Enix", ff7.developer)
+        assertEquals(listOf("GDR", "JRPG"), ff7.steamTagNames)
         assertEquals("2026-11-16T22:59:59Z", ff7.endsAtIso)
         assertEquals("https://www.nintendo.com/it-it/Giochi/FINAL-FANTASY-VII-REBIRTH-3016562.html", ff7.eshopUrl)
 
@@ -228,6 +277,9 @@ class NintendoEshopClientTest {
         assertEquals(7.49, ballXPit.discountedPriceEur, 0.001)
         assertEquals(50, ballXPit.discountPercent)
         assertEquals(25548, ballXPit.steamReviewCount)
+        assertEquals(95, ballXPit.steamPositivePercent)
+        assertEquals("Kenny Sun", ballXPit.developer)
+        assertEquals(listOf("Roguelite", "Roguelike", "Inferno di proiettili"), ballXPit.steamTagNames)
         assertEquals("2026-11-12T23:00:00Z", ballXPit.startsAtIso)
 
         val onePiece = byId.getValue("2618635")

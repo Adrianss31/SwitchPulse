@@ -180,6 +180,8 @@ private fun SwitchPulseRoot(
                         }
                     }
                 },
+                onToggleLike = viewModel::toggleLikeDeal,
+                onToggleForYou = viewModel::setForYouOnlyMode,
                 onRefresh = viewModel::refreshDeals,
                 onResetFilters = viewModel::resetFilters,
                 onOpenUpdateTab = { selectedTab = 1 },
@@ -200,6 +202,11 @@ private fun SwitchPulseRoot(
                 onWidgetPinFeedback = { msg ->
                     scope.launch { snackbarHostState.showSnackbar(msg) }
                 },
+                onRecommendationWeightChange = viewModel::setRecommendationWeight,
+                onSearchProfileGames = viewModel::searchProfileGames,
+                onAddLikedGame = viewModel::addLikedGame,
+                onRemoveLikedGame = viewModel::removeLikedGame,
+                onSaveGeminiApiKey = viewModel::setGeminiApiKey,
                 modifier = Modifier.padding(innerPadding)
             )
         }

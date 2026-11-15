@@ -13,7 +13,9 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.switchpulse.app.BuildConfig
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
+import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.PlatformFilter
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -34,6 +36,12 @@ class PreferencesStore(private val context: Context) {
             else json.decodeFromString<Map<String, String>>(titlesMapJson)
         }.getOrDefault(emptyMap())
 
+        val likedJson = prefs[KEY_LIKED_GAMES_JSON].orEmpty()
+        val likedGames = runCatching {
+            if (likedJson.isBlank()) emptyList()
+            else json.decodeFromString<List<LikedGame>>(likedJson)
+        }.getOrDefault(emptyList())
+
         FilterSettings(
             minDiscountPercent = prefs[KEY_MIN_DISCOUNT] ?: 30,
             minRegularPriceEur = prefs[KEY_MIN_REGULAR_EUR] ?: 10f,
@@ -42,6 +50,10 @@ class PreferencesStore(private val context: Context) {
             syncIntervalHours = prefs[KEY_SYNC_INTERVAL_HOURS] ?: 12,
             blacklistIds = prefs[KEY_BLACKLIST_IDS] ?: emptySet(),
             blacklistTitles = titlesMap,
+            likedGames = likedGames,
+            recommendationWeight = prefs[KEY_RECOMMENDATION_WEIGHT] ?: 50,
+            forYouOnlyMode = prefs[KEY_FOR_YOU_MODE] ?: false,
+            geminiApiKey = prefs[KEY_GEMINI_API_KEY] ?: "",
             githubRepo = prefs[KEY_GITHUB_REPO] ?: BuildConfig.DEFAULT_GITHUB_REPO,
             autoCheckUpdates = prefs[KEY_AUTO_CHECK_UPDATES] ?: true,
             lastSyncEpochMs = prefs[KEY_LAST_SYNC_MS] ?: 0L
@@ -120,6 +132,60 @@ class PreferencesStore(private val context: Context) {
         }
     }
 
+    suspend fun toggleLikedGame(game: LikedGame): Boolean {
+        var added = false
+        context.dataStore.edit { prefs ->
+            val current = readLikedList(prefs[KEY_LIKED_GAMES_JSON]).toMutableList()
+            val targetNorm = DealTitleNormalizer.normalize(game.title)
+            val existingIdx = current.indexOfFirst {
+                it.id == game.id || DealTitleNormalizer.normalize(it.title) == targetNorm
+            }
+            if (existingIdx >= 0) {
+                current.removeAt(existingIdx)
+                added = false
+            } else {
+                current.add(0, game)
+                added = true
+            }
+            prefs[KEY_LIKED_GAMES_JSON] = json.encodeToString(current)
+        }
+        return added
+    }
+
+    suspend fun addLikedGame(game: LikedGame) {
+        context.dataStore.edit { prefs ->
+            val current = readLikedList(prefs[KEY_LIKED_GAMES_JSON]).toMutableList()
+            val targetNorm = DealTitleNormalizer.normalize(game.title)
+            current.removeAll { it.id == game.id || DealTitleNormalizer.normalize(it.title) == targetNorm }
+            current.add(0, game)
+            prefs[KEY_LIKED_GAMES_JSON] = json.encodeToString(current)
+        }
+    }
+
+    suspend fun removeLikedGame(gameId: String) {
+        context.dataStore.edit { prefs ->
+            val current = readLikedList(prefs[KEY_LIKED_GAMES_JSON]).filterNot { it.id == gameId }
+            prefs[KEY_LIKED_GAMES_JSON] = json.encodeToString(current)
+        }
+    }
+
+    suspend fun updateRecommendationWeight(weight: Int) {
+        context.dataStore.edit { it[KEY_RECOMMENDATION_WEIGHT] = weight.coerceIn(0, 100) }
+    }
+
+    suspend fun updateForYouMode(enabled: Boolean) {
+        context.dataStore.edit { it[KEY_FOR_YOU_MODE] = enabled }
+    }
+
+    suspend fun updateGeminiApiKey(apiKey: String) {
+        context.dataStore.edit { it[KEY_GEMINI_API_KEY] = apiKey.trim() }
+    }
+
+    private fun readLikedList(raw: String?): List<LikedGame> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { json.decodeFromString<List<LikedGame>>(raw) }.getOrDefault(emptyList())
+    }
+
     suspend fun resetFilters() {
         context.dataStore.edit { prefs ->
             prefs[KEY_MIN_DISCOUNT] = 30
@@ -140,6 +206,10 @@ class PreferencesStore(private val context: Context) {
         private val KEY_SYNC_INTERVAL_HOURS = intPreferencesKey("sync_interval_hours")
         private val KEY_BLACKLIST_IDS = stringSetPreferencesKey("blacklist_ids")
         private val KEY_BLACKLIST_TITLES = stringPreferencesKey("blacklist_titles_json")
+        private val KEY_LIKED_GAMES_JSON = stringPreferencesKey("liked_games_json")
+        private val KEY_RECOMMENDATION_WEIGHT = intPreferencesKey("recommendation_weight")
+        private val KEY_FOR_YOU_MODE = booleanPreferencesKey("for_you_mode")
+        private val KEY_GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
         private val KEY_GITHUB_REPO = stringPreferencesKey("github_repo")
         private val KEY_AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         private val KEY_LAST_SYNC_MS = longPreferencesKey("last_sync_ms")

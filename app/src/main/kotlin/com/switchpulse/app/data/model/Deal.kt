@@ -52,8 +52,41 @@ data class Deal(
     val releasedAtIso: String? = null,
     val chartRank: Int? = null,
     val steamReviewCount: Int = 0,
+    val steamPositivePercent: Int? = null,
     val metacriticScore: Int? = null,
-    val hotScore: Double = 0.0
+    val hotScore: Double = 0.0,
+    val steamTagIds: List<Int> = emptyList(),
+    val steamTagNames: List<String> = emptyList(),
+    val gameCategories: List<String> = emptyList(),
+    val developer: String? = null,
+    val excerpt: String? = null,
+    val aiAffinityScore: Double? = null,
+    val aiReason: String? = null,
+    val personalScore: Double = 0.0,
+    val matchReason: String? = null
+) {
+    fun toLikedGame(): LikedGame = LikedGame(
+        id = id,
+        title = title,
+        publisher = publisher,
+        developer = developer,
+        gameCategories = gameCategories,
+        steamTagIds = steamTagIds,
+        steamTagNames = steamTagNames,
+        excerpt = excerpt
+    )
+}
+
+@Serializable
+data class LikedGame(
+    val id: String,
+    val title: String,
+    val publisher: String = "",
+    val developer: String? = null,
+    val gameCategories: List<String> = emptyList(),
+    val steamTagIds: List<Int> = emptyList(),
+    val steamTagNames: List<String> = emptyList(),
+    val excerpt: String? = null
 )
 
 /**
@@ -86,6 +119,10 @@ data class FilterSettings(
     val syncIntervalHours: Int = 12,
     val blacklistIds: Set<String> = emptySet(),
     val blacklistTitles: Map<String, String> = emptyMap(),
+    val likedGames: List<LikedGame> = emptyList(),
+    val recommendationWeight: Int = 50,
+    val forYouOnlyMode: Boolean = false,
+    val geminiApiKey: String = "",
     val githubRepo: String = "",
     val autoCheckUpdates: Boolean = true,
     val lastSyncEpochMs: Long = 0L

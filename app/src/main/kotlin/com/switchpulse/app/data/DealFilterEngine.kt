@@ -17,8 +17,9 @@ object DealFilterEngine {
         platformOverride: PlatformFilter = settings.appPlatformFilter,
         limit: Int = 10
     ): List<Deal> {
-        val hasHotScores = rawDeals.any { it.hotScore > 0.0 }
-        val filtered = rawDeals
+        val recommended = RecommendationEngine.applyRecommendations(rawDeals, settings)
+        val hasScores = recommended.any { it.hotScore > 0.0 || it.personalScore > 0.0 }
+        val filtered = recommended
             .asSequence()
             .filter { deal -> deal.id !in settings.blacklistIds }
             .filter { deal -> deal.discountPercent >= settings.minDiscountPercent }
@@ -31,9 +32,9 @@ object DealFilterEngine {
                 }
             }
 
-        val ordered = if (hasHotScores) {
+        val ordered = if (hasScores) {
             filtered.sortedWith(
-                compareByDescending<Deal> { it.hotScore }
+                compareByDescending<Deal> { if (it.personalScore > 0.0) it.personalScore else it.hotScore }
                     .thenByDescending { it.platform == Platform.SWITCH_2 }
                     .thenBy { it.popularityRank }
             )

@@ -7,6 +7,7 @@ import com.switchpulse.app.BuildConfig
 import com.switchpulse.app.data.DealsRepository
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.FilterSettings
+import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.PlatformFilter
 import com.switchpulse.app.update.GitHubUpdater
 import com.switchpulse.app.update.InstallLaunchResult
@@ -39,7 +40,9 @@ data class MainUiState(
     val isRefreshing: Boolean = false,
     val errorMessage: String? = null,
     val updateState: UpdateUiState = UpdateUiState.Idle,
-    val statusMessage: String? = null
+    val statusMessage: String? = null,
+    val profileSearchResults: List<LikedGame> = emptyList(),
+    val isSearchingProfile: Boolean = false
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -52,21 +55,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val errorMessage = MutableStateFlow<String?>(null)
     private val updateState = MutableStateFlow<UpdateUiState>(UpdateUiState.Idle)
     private val statusMessage = MutableStateFlow<String?>(null)
+    private val profileSearchResults = MutableStateFlow<List<LikedGame>>(emptyList())
+    private val isSearchingProfile = MutableStateFlow(false)
 
     val uiState: StateFlow<MainUiState> = combine(
         repository.filteredAppDealsFlow,
         repository.settingsFlow,
-        isRefreshing,
-        errorMessage,
-        combine(updateState, statusMessage) { u, s -> u to s }
-    ) { deals, settings, refreshing, error, (update, status) ->
+        combine(isRefreshing, errorMessage) { r, e -> r to e },
+        combine(updateState, statusMessage) { u, s -> u to s },
+        combine(profileSearchResults, isSearchingProfile) { res, searching -> res to searching }
+    ) { deals, settings, (refreshing, error), (update, status), (searchResults, searching) ->
         MainUiState(
             deals = deals,
             settings = settings,
             isRefreshing = refreshing,
             errorMessage = error,
             updateState = update,
-            statusMessage = status
+            statusMessage = status,
+            profileSearchResults = searchResults,
+            isSearchingProfile = searching
         )
     }.stateIn(
         scope = viewModelScope,
@@ -140,6 +147,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.preferences.unhideDeal(dealId)
             repository.notifyWidgetChanged()
+        }
+    }
+
+    fun toggleLikeDeal(deal: Deal) {
+        viewModelScope.launch {
+            val added = repository.preferences.toggleLikedGame(deal.toLikedGame())
+            statusMessage.value = if (added) {
+                "\"${deal.title}\" aggiunto ai tuoi gusti ♥"
+            } else {
+                "\"${deal.title}\" rimosso dai preferiti"
+            }
+            repository.notifyWidgetChanged()
+        }
+    }
+
+    fun searchProfileGames(query: String) {
+        if (query.trim().length < 2) {
+            profileSearchResults.value = emptyList()
+            return
+        }
+        viewModelScope.launch {
+            isSearchingProfile.value = true
+            profileSearchResults.value = runCatching {
+                repository.searchGamesForProfile(query)
+            }.getOrDefault(emptyList())
+            isSearchingProfile.value = false
+        }
+    }
+
+    fun addLikedGame(game: LikedGame) {
+        viewModelScope.launch {
+            repository.preferences.addLikedGame(game)
+            profileSearchResults.value = emptyList()
+            statusMessage.value = "\"${game.title}\" salvato nei tuoi preferiti ♥"
+            repository.notifyWidgetChanged()
+        }
+    }
+
+    fun removeLikedGame(gameId: String) {
+        viewModelScope.launch {
+            repository.preferences.removeLikedGame(gameId)
+            repository.notifyWidgetChanged()
+        }
+    }
+
+    fun setRecommendationWeight(weight: Int) {
+        viewModelScope.launch {
+            repository.preferences.updateRecommendationWeight(weight)
+            repository.notifyWidgetChanged()
+        }
+    }
+
+    fun setForYouOnlyMode(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.preferences.updateForYouMode(enabled)
+        }
+    }
+
+    fun setGeminiApiKey(apiKey: String) {
+        viewModelScope.launch {
+            repository.preferences.updateGeminiApiKey(apiKey)
+            statusMessage.value = if (apiKey.trim().isBlank()) {
+                "Chiave Gemini rimossa (attivo motore locale a micro-tag)"
+            } else {
+                "Chiave Gemini salvata · Ricarica il feed per attivare il reranking AI"
+            }
         }
     }
 

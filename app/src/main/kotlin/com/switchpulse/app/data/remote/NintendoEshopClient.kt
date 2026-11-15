@@ -1,7 +1,9 @@
 package com.switchpulse.app.data.remote
 
+import com.switchpulse.app.data.RecommendationEngine
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealTitleNormalizer
+import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.Platform
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -12,6 +14,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -35,23 +38,28 @@ class NintendoEshopClient(
     private val priceBaseUrl: String = PRICE_URL,
     private val chartsUrl: String = CHARTS_URL,
     private val steamSearchUrl: String = STEAM_SEARCH_URL,
-    private val steamAppDetailsUrl: String = STEAM_APP_DETAILS_URL,
+    private val steamBrowseItemsUrl: String = STEAM_BROWSE_ITEMS_URL,
+    private val steamTagListUrl: String = STEAM_TAG_LIST_URL,
     private val clock: Clock = Clock.systemUTC()
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    @Volatile
+    private var cachedSteamTagNames: Map<Int, String> = emptyMap()
+
     /**
      * Fetches discounted Switch & Switch 2 deals across popularity, Switch 2, recent releases,
-     * and the official Nintendo IT Best Sellers chart, enriches live EUR pricing + Steam acclaim
-     * on shortlisted candidates, and assigns each deal a freshness-weighted Hot Score.
+     * optional liked-category niches, and Nintendo IT Best Sellers chart, then enriches shortlisted
+     * candidates via Steam batch browse metadata (reviews, sentiment %, micro-tags, developer).
      */
-    suspend fun fetchPopularDeals(): List<Deal> = withContext(Dispatchers.IO) {
+    suspend fun fetchPopularDeals(likedGames: List<LikedGame> = emptyList()): List<Deal> = withContext(Dispatchers.IO) {
         val now = clock.instant()
         val recentCutoffIso = RECENT_CUTOFF_FORMATTER.format(
             now.minus(RECENT_WINDOW_DAYS, ChronoUnit.DAYS).atOffset(ZoneOffset.UTC)
         )
+        val preferredCats = RecommendationEngine.topLikedCategories(likedGames, limit = 3)
 
-        val (generalDocs, switch2Docs, recentDocs, chartEntries) = coroutineScope {
+        val (generalDocs, switch2Docs, recentDocs, tasteDocs, chartEntries) = coroutineScope {
             val generalDeferred = async {
                 querySearch(
                     fq = "type:GAME AND price_has_discount_b:true AND (system_type:*nintendoswitch* OR system_type:*nintendoswitch2*)",
@@ -72,13 +80,27 @@ class NintendoEshopClient(
                     )
                 }.getOrDefault(emptyList())
             }
+            val tasteDeferred = async {
+                if (preferredCats.isEmpty()) {
+                    emptyList()
+                } else {
+                    val catClause = preferredCats.joinToString(" OR ")
+                    runCatching {
+                        querySearch(
+                            fq = "type:GAME AND price_has_discount_b:true AND game_categories_txt:($catClause) AND (system_type:*nintendoswitch* OR system_type:*nintendoswitch2*)",
+                            rows = 120
+                        )
+                    }.getOrDefault(emptyList())
+                }
+            }
             val chartsDeferred = async { fetchBestSellerCharts() }
 
-            Quad(
-                generalDeferred.await(),
-                switch2Deferred.await(),
-                recentDeferred.await(),
-                chartsDeferred.await()
+            FetchBundle(
+                general = generalDeferred.await(),
+                switch2 = switch2Deferred.await(),
+                recent = recentDeferred.await(),
+                taste = tasteDeferred.await(),
+                charts = chartsDeferred.await()
             )
         }
 
@@ -96,6 +118,7 @@ class NintendoEshopClient(
             generalDocs = generalDocs,
             switch2Docs = switch2Docs,
             recentDocs = recentDocs,
+            tasteDocs = tasteDocs,
             discountedChartIds = discountedChartIds
         )
 
@@ -111,23 +134,74 @@ class NintendoEshopClient(
             )
         }
 
-        val shortlist = buildShortlist(baseDeals, now)
-        val steamAcclaimByTitle = fetchSteamAcclaim(shortlist)
+        val shortlist = buildShortlist(baseDeals, preferredCats, now)
+        val steamAcclaimByTitle = fetchSteamAcclaimBatch(shortlist)
 
         baseDeals.map { deal ->
             val baseTitle = DealTitleNormalizer.normalize(deal.title)
             val steam = steamAcclaimByTitle[baseTitle]
+            val reviewCount = steam?.reviewCount ?: 0
+            val positivePct = steam?.positivePercent
             val finalScore = computeHotScore(
                 deal = deal,
-                steamReviewCount = steam?.reviewCount ?: 0,
-                metacriticScore = steam?.metacriticScore,
+                steamReviewCount = reviewCount,
+                steamPositivePercent = positivePct,
                 wasShortlisted = baseTitle in steamAcclaimByTitle,
                 now = now
             )
             deal.copy(
-                steamReviewCount = steam?.reviewCount ?: 0,
-                metacriticScore = steam?.metacriticScore,
+                steamReviewCount = reviewCount,
+                steamPositivePercent = positivePct,
+                steamTagIds = steam?.tagIds.orEmpty(),
+                steamTagNames = steam?.tagNames.orEmpty(),
+                developer = steam?.developer,
+                excerpt = steam?.shortDescription ?: deal.excerpt,
                 hotScore = finalScore
+            )
+        }
+    }
+
+    /**
+     * Searches Nintendo Switch / Switch 2 games by title (discounted or full price)
+     * and enriches matched items with Steam micro-tags so users can seed their taste profile.
+     */
+    suspend fun searchGamesForProfile(query: String): List<LikedGame> = withContext(Dispatchers.IO) {
+        val cleanQuery = query.trim()
+        if (cleanQuery.length < 2) return@withContext emptyList()
+
+        val docs = runCatching {
+            querySearch(
+                q = cleanQuery,
+                fq = "type:GAME AND (system_type:*nintendoswitch* OR system_type:*nintendoswitch2*)",
+                rows = 8
+            )
+        }.getOrDefault(emptyList())
+
+        val candidates = docs.mapNotNull { doc ->
+            val id = doc.fsId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val title = doc.title?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            LikedGame(
+                id = id,
+                title = title,
+                publisher = doc.publisher?.trim().orEmpty(),
+                gameCategories = doc.gameCategoriesTxt.orEmpty(),
+                excerpt = doc.excerpt?.trim()
+            )
+        }.distinctBy { DealTitleNormalizer.normalize(it.title) }
+
+        if (candidates.isEmpty()) return@withContext emptyList()
+
+        val steamByTitle = fetchSteamAcclaimForTitles(
+            titles = candidates.map { it.title to it.publisher }
+        )
+        candidates.map { game ->
+            val steam = steamByTitle[DealTitleNormalizer.normalize(game.title)]
+            if (steam == null) game
+            else game.copy(
+                developer = steam.developer ?: game.developer,
+                steamTagIds = steam.tagIds,
+                steamTagNames = steam.tagNames,
+                excerpt = steam.shortDescription ?: game.excerpt
             )
         }
     }
@@ -136,6 +210,7 @@ class NintendoEshopClient(
         generalDocs: List<SolrDoc>,
         switch2Docs: List<SolrDoc>,
         recentDocs: List<SolrDoc>,
+        tasteDocs: List<SolrDoc>,
         discountedChartIds: List<String>
     ): List<RankedCandidate> {
         val byId = LinkedHashMap<String, RankedCandidate>()
@@ -167,6 +242,18 @@ class NintendoEshopClient(
                 byId[id] = existing.copy(popRecent = index + 1)
             }
         }
+        tasteDocs.forEachIndexed { index, doc ->
+            val id = doc.fsId?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
+            byId.putIfAbsent(
+                id,
+                RankedCandidate(
+                    id = id,
+                    doc = doc,
+                    popAll = generalDocs.size + switch2Docs.size + recentDocs.size + index + 1,
+                    popTaste = index + 1
+                )
+            )
+        }
 
         val missingChartIds = discountedChartIds.filter { it !in byId }
         if (missingChartIds.isNotEmpty()) {
@@ -181,7 +268,11 @@ class NintendoEshopClient(
                 val id = doc.fsId?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
                 byId.putIfAbsent(
                     id,
-                    RankedCandidate(id = id, doc = doc, popAll = generalDocs.size + switch2Docs.size + recentDocs.size + index + 1)
+                    RankedCandidate(
+                        id = id,
+                        doc = doc,
+                        popAll = generalDocs.size + switch2Docs.size + recentDocs.size + tasteDocs.size + index + 1
+                    )
                 )
             }
         }
@@ -189,14 +280,16 @@ class NintendoEshopClient(
         return byId.values.toList()
     }
 
-    private fun querySearch(fq: String, rows: Int): List<SolrDoc> {
+    private fun querySearch(fq: String, rows: Int, q: String = "*"): List<SolrDoc> {
         val url = searchBaseUrl.toHttpUrl().newBuilder()
-            .addQueryParameter("q", "*")
+            .addQueryParameter("q", q)
             .addQueryParameter("fq", fq)
             .addQueryParameter("rows", rows.toString())
             .addQueryParameter("start", "0")
             .addQueryParameter("wt", "json")
-            .addQueryParameter("sort", "popularity asc")
+            .apply {
+                if (q == "*") addQueryParameter("sort", "popularity asc")
+            }
             .build()
 
         val request = Request.Builder()
@@ -316,7 +409,11 @@ class NintendoEshopClient(
         val publisher = doc.publisher?.trim().orEmpty().ifBlank { "Nintendo eShop" }
         val releasedAtIso = doc.datesReleasedDts?.firstOrNull()
         val startsAtIso = live?.discountPrice?.startDatetime
-        val effectivePopRank = minOf(candidate.popAll, candidate.popRecent ?: Int.MAX_VALUE)
+        val effectivePopRank = minOf(
+            candidate.popAll,
+            candidate.popRecent ?: Int.MAX_VALUE,
+            candidate.popTaste ?: Int.MAX_VALUE
+        )
 
         val deal = Deal(
             id = id,
@@ -333,7 +430,9 @@ class NintendoEshopClient(
             popularityRank = effectivePopRank,
             startsAtIso = startsAtIso,
             releasedAtIso = releasedAtIso,
-            chartRank = chartRank
+            chartRank = chartRank,
+            gameCategories = doc.gameCategoriesTxt.orEmpty().map { it.lowercase() },
+            excerpt = doc.excerpt?.trim()?.takeIf { it.isNotBlank() }
         )
 
         return deal.copy(
@@ -342,11 +441,14 @@ class NintendoEshopClient(
     }
 
     /**
-     * Builds a shortlist (~70-80 titles) across Best Sellers, overall pre-score,
-     * fresh discounts (last ~7.5 days), and Switch 2 highlights so Steam quality checks stay fast
-     * while covering Top 30 feeds per platform.
+     * Builds a shortlist (~75-85 titles) across Best Sellers, overall pre-score,
+     * fresh discounts, Switch 2 highlights, and liked categories for fast batch Steam enrichment.
      */
-    private fun buildShortlist(deals: List<Deal>, now: Instant): List<Deal> {
+    private fun buildShortlist(
+        deals: List<Deal>,
+        preferredCategories: List<String>,
+        now: Instant
+    ): List<Deal> {
         val eligible = deals.filter { it.regularPriceEur >= 5.0 && it.discountPercent >= 20 }
         val deduped = eligible
             .sortedByDescending { it.hotScore + if (it.platform == Platform.SWITCH_2) 4.0 else 0.0 }
@@ -364,38 +466,64 @@ class NintendoEshopClient(
             .take(22)
             .forEach { picked[it.id] = it }
 
+        if (preferredCategories.isNotEmpty()) {
+            val catSet = preferredCategories.toSet()
+            deduped.filter { deal -> deal.gameCategories.any { it in catSet } }
+                .take(22)
+                .forEach { picked[it.id] = it }
+        }
+
         return picked.values.toList()
     }
 
-    private suspend fun fetchSteamAcclaim(shortlist: List<Deal>): Map<String, SteamAcclaim> = coroutineScope {
-        val semaphore = Semaphore(8)
-        val uniqueTargets = shortlist
-            .filterNot { isNintendoFirstParty(it.publisher) }
-            .distinctBy { DealTitleNormalizer.normalize(it.title) }
-
-        val deferredResults = uniqueTargets.map { deal ->
-            val baseTitle = DealTitleNormalizer.normalize(deal.title)
-            async(Dispatchers.IO) {
-                val acclaim = semaphore.withPermit { lookupSteamGame(baseTitle) }
-                baseTitle to acclaim
-            }
-        }
-
-        deferredResults.awaitAll().toMap()
+    private suspend fun fetchSteamAcclaimBatch(shortlist: List<Deal>): Map<String, SteamAcclaim> {
+        return fetchSteamAcclaimForTitles(shortlist.map { it.title to it.publisher })
     }
 
-    private fun lookupSteamGame(normalizedTitle: String): SteamAcclaim {
+    private suspend fun fetchSteamAcclaimForTitles(
+        titles: List<Pair<String, String>>
+    ): Map<String, SteamAcclaim> = coroutineScope {
+        val semaphore = Semaphore(8)
+        val uniqueTargets = titles
+            .filterNot { (_, pub) -> isNintendoFirstParty(pub) }
+            .map { (title, _) -> DealTitleNormalizer.normalize(title) }
+            .distinct()
+
+        if (uniqueTargets.isEmpty()) return@coroutineScope emptyMap()
+
+        val tagMapDeferred = async(Dispatchers.IO) { ensureTagNamesLoaded() }
+        val appIdsByNormTitle = uniqueTargets.map { normTitle ->
+            async(Dispatchers.IO) {
+                val appId = semaphore.withPermit { lookupSteamAppId(normTitle) }
+                normTitle to appId
+            }
+        }.awaitAll().mapNotNull { (norm, appId) ->
+            appId?.let { norm to it }
+        }
+
+        if (appIdsByNormTitle.isEmpty()) return@coroutineScope emptyMap()
+
+        val tagMap = tagMapDeferred.await()
+        val uniqueAppIds = appIdsByNormTitle.map { it.second }.distinct()
+        val browseById = fetchSteamBrowseItemsBatch(uniqueAppIds, tagMap)
+
+        appIdsByNormTitle.associate { (normTitle, appId) ->
+            normTitle to (browseById[appId] ?: SteamAcclaim())
+        }
+    }
+
+    private fun lookupSteamAppId(normalizedTitle: String): Int? {
         val searchUrl = steamSearchUrl.toHttpUrl().newBuilder()
             .addQueryParameter("term", normalizedTitle)
             .addQueryParameter("cc", "IT")
             .build()
 
-        val searchBody = executeGet(searchUrl.toString()) ?: return SteamAcclaim()
+        val searchBody = executeGet(searchUrl.toString()) ?: return null
         val searchItems = runCatching {
             json.decodeFromString<SteamStoreSearchResponse>(searchBody).items
         }.getOrDefault(emptyList())
 
-        val matchedAppId = searchItems.firstOrNull { item ->
+        return searchItems.firstOrNull { item ->
             val rawName = item.name.orEmpty()
             val lower = rawName.lowercase()
             if (IGNORED_STEAM_SUFFIXES.any { lower.contains(it) }) return@firstOrNull false
@@ -403,26 +531,75 @@ class NintendoEshopClient(
             candidateNorm == normalizedTitle ||
                 (normalizedTitle.length >= 6 &&
                     (candidateNorm.startsWith("$normalizedTitle ") || normalizedTitle.startsWith("$candidateNorm ")))
-        }?.id ?: return SteamAcclaim()
+        }?.id
+    }
 
-        val detailsUrl = steamAppDetailsUrl.toHttpUrl().newBuilder()
-            .addQueryParameter("appids", matchedAppId.toString())
-            .addQueryParameter("cc", "IT")
+    private suspend fun fetchSteamBrowseItemsBatch(
+        appIds: List<Int>,
+        tagNames: Map<Int, String>
+    ): Map<Int, SteamAcclaim> = coroutineScope {
+        if (appIds.isEmpty()) return@coroutineScope emptyMap()
+        val semaphore = Semaphore(3)
+
+        val items = appIds.chunked(45).map { chunk ->
+            async(Dispatchers.IO) {
+                semaphore.withPermit {
+                    fetchBrowseChunk(chunk)
+                }
+            }
+        }.awaitAll().flatten()
+
+        items.associate { item ->
+            val tags = item.tagids.orEmpty()
+            val resolvedNames = tags.map { id -> tagNames[id] ?: "" }
+            val dev = item.basicInfo?.developers?.firstOrNull()?.name?.trim()?.takeIf { it.isNotBlank() }
+            val shortDesc = item.basicInfo?.shortDescription?.trim()?.takeIf { it.isNotBlank() }
+            val summary = item.reviews?.summaryFiltered
+            item.appid to SteamAcclaim(
+                reviewCount = summary?.reviewCount ?: 0,
+                positivePercent = summary?.percentPositive,
+                tagIds = tags,
+                tagNames = resolvedNames,
+                developer = dev,
+                shortDescription = shortDesc
+            )
+        }
+    }
+
+    private fun fetchBrowseChunk(appIds: List<Int>): List<SteamBrowseStoreItem> = runCatching {
+        val payload = SteamBrowseInput(
+            ids = appIds.map { SteamBrowseId(appid = it) },
+            context = SteamBrowseContext(language = "italian", countryCode = "IT"),
+            dataRequest = SteamBrowseDataRequest(
+                includeTagCount = 10,
+                includeReviews = true,
+                includeBasicInfo = true
+            )
+        )
+        val url = steamBrowseItemsUrl.toHttpUrl().newBuilder()
+            .addQueryParameter("input_json", json.encodeToString(payload))
             .build()
 
-        val detailsBody = executeGet(detailsUrl.toString()) ?: return SteamAcclaim()
-        return runCatching {
-            val parsed = json.decodeFromString<Map<String, SteamAppDetailsEnvelope>>(detailsBody)
-            val data = parsed[matchedAppId.toString()]?.data
-            if (data != null && (data.type == null || data.type == "game")) {
-                SteamAcclaim(
-                    reviewCount = data.recommendations?.total ?: 0,
-                    metacriticScore = data.metacritic?.score
-                )
-            } else {
-                SteamAcclaim()
-            }
-        }.getOrDefault(SteamAcclaim())
+        val body = executeGet(url.toString()) ?: return emptyList()
+        json.decodeFromString<SteamBrowseResponse>(body).response.storeItems
+    }.getOrDefault(emptyList())
+
+    private fun ensureTagNamesLoaded(): Map<Int, String> {
+        val existing = cachedSteamTagNames
+        if (existing.isNotEmpty()) return existing
+
+        val loaded = runCatching {
+            val body = executeGet(steamTagListUrl) ?: return@runCatching emptyMap()
+            json.decodeFromString<SteamTagListResponse>(body)
+                .response
+                .tags
+                .associate { it.tagid to it.name }
+        }.getOrDefault(emptyMap())
+
+        if (loaded.isNotEmpty()) {
+            cachedSteamTagNames = loaded
+        }
+        return loaded
     }
 
     private fun executeGet(url: String): String? = runCatching {
@@ -460,7 +637,7 @@ class NintendoEshopClient(
     internal fun computeHotScore(
         deal: Deal,
         steamReviewCount: Int,
-        metacriticScore: Int?,
+        steamPositivePercent: Int?,
         wasShortlisted: Boolean,
         now: Instant
     ): Double {
@@ -468,13 +645,20 @@ class NintendoEshopClient(
         val isMajor = isKnownMajorPublisher(deal.publisher)
         val acclaimPts = when {
             isNintendo -> 34.0
-            steamReviewCount >= 300 -> log10(steamReviewCount + 1.0) * 7.6
+            steamReviewCount >= 300 -> {
+                val base = log10(steamReviewCount + 1.0) * 7.6
+                val sentimentAdj = when {
+                    steamPositivePercent != null && steamPositivePercent < 60 -> -12.0
+                    steamPositivePercent != null && steamPositivePercent >= 90 -> 4.0
+                    else -> 0.0
+                }
+                base + sentimentAdj
+            }
             deal.chartRank != null -> 18.0
             isMajor -> 10.0
             wasShortlisted -> -12.0
             else -> -14.0
         }
-        val mcPts = metacriticScore?.let { ((it - 72) * 0.45).coerceAtLeast(0.0) } ?: 0.0
         val chartPts = deal.chartRank?.let { ((50 - it).coerceAtLeast(1)) * 0.65 } ?: 0.0
         val popPts = if (deal.popularityRank < 900) {
             (12.0 - ln(1.0 + deal.popularityRank) * 1.8).coerceAtLeast(0.0)
@@ -492,7 +676,7 @@ class NintendoEshopClient(
         }
 
         // Shift upward so legitimate scored items stay strictly > 0.0
-        return (acclaimPts + mcPts + chartPts + popPts + freshPts + discPts + recencyPts + 25.0)
+        return (acclaimPts + chartPts + popPts + freshPts + discPts + recencyPts + 25.0)
             .coerceAtLeast(0.1)
     }
 
@@ -540,7 +724,8 @@ class NintendoEshopClient(
         const val PRICE_URL = "https://api.ec.nintendo.com/v1/price"
         const val CHARTS_URL = "https://api.games.nintendo-europe.com/charts?pageLocale=it_IT"
         const val STEAM_SEARCH_URL = "https://store.steampowered.com/api/storesearch/"
-        const val STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
+        const val STEAM_BROWSE_ITEMS_URL = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
+        const val STEAM_TAG_LIST_URL = "https://api.steampowered.com/IStoreService/GetTagList/v1/?language=italian"
 
         private const val USER_AGENT = "SwitchPulse/1.1 (Android)"
         private const val BROWSER_USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36"
@@ -566,11 +751,12 @@ class NintendoEshopClient(
     }
 }
 
-private data class Quad<A, B, C, D>(
-    val first: A,
-    val second: B,
-    val third: C,
-    val fourth: D
+private data class FetchBundle(
+    val general: List<SolrDoc>,
+    val switch2: List<SolrDoc>,
+    val recent: List<SolrDoc>,
+    val taste: List<SolrDoc>,
+    val charts: List<NintendoChartEntry>
 )
 
 internal data class RankedCandidate(
@@ -578,12 +764,17 @@ internal data class RankedCandidate(
     val doc: SolrDoc,
     val popAll: Int,
     val popSw2: Int? = null,
-    val popRecent: Int? = null
+    val popRecent: Int? = null,
+    val popTaste: Int? = null
 )
 
 internal data class SteamAcclaim(
     val reviewCount: Int = 0,
-    val metacriticScore: Int? = null
+    val positivePercent: Int? = null,
+    val tagIds: List<Int> = emptyList(),
+    val tagNames: List<String> = emptyList(),
+    val developer: String? = null,
+    val shortDescription: String? = null
 )
 
 @Serializable
@@ -601,6 +792,8 @@ internal data class SolrDoc(
     @SerialName("fs_id") val fsId: String? = null,
     val title: String? = null,
     val publisher: String? = null,
+    val excerpt: String? = null,
+    @SerialName("game_categories_txt") val gameCategoriesTxt: List<String>? = null,
     @SerialName("system_type") val systemType: List<String>? = null,
     val url: String? = null,
     @SerialName("dates_released_dts") val datesReleasedDts: List<String>? = null,
@@ -655,23 +848,82 @@ internal data class SteamStoreSearchItem(
 )
 
 @Serializable
-internal data class SteamAppDetailsEnvelope(
-    val data: SteamAppDetailsData? = null
+internal data class SteamBrowseInput(
+    val ids: List<SteamBrowseId>,
+    val context: SteamBrowseContext,
+    @SerialName("data_request") val dataRequest: SteamBrowseDataRequest
 )
 
 @Serializable
-internal data class SteamAppDetailsData(
-    val type: String? = null,
-    val recommendations: SteamRecommendations? = null,
-    val metacritic: SteamMetacritic? = null
+internal data class SteamBrowseId(
+    val appid: Int
 )
 
 @Serializable
-internal data class SteamRecommendations(
-    val total: Int = 0
+internal data class SteamBrowseContext(
+    val language: String,
+    @SerialName("country_code") val countryCode: String
 )
 
 @Serializable
-internal data class SteamMetacritic(
-    val score: Int? = null
+internal data class SteamBrowseDataRequest(
+    @SerialName("include_tag_count") val includeTagCount: Int,
+    @SerialName("include_reviews") val includeReviews: Boolean,
+    @SerialName("include_basic_info") val includeBasicInfo: Boolean
+)
+
+@Serializable
+internal data class SteamBrowseResponse(
+    val response: SteamBrowseResponseBody = SteamBrowseResponseBody()
+)
+
+@Serializable
+internal data class SteamBrowseResponseBody(
+    @SerialName("store_items") val storeItems: List<SteamBrowseStoreItem> = emptyList()
+)
+
+@Serializable
+internal data class SteamBrowseStoreItem(
+    val appid: Int = 0,
+    @SerialName("basic_info") val basicInfo: SteamBasicInfo? = null,
+    val tagids: List<Int>? = null,
+    val reviews: SteamBrowseReviews? = null
+)
+
+@Serializable
+internal data class SteamBasicInfo(
+    @SerialName("short_description") val shortDescription: String? = null,
+    val developers: List<SteamCreatorInfo>? = null
+)
+
+@Serializable
+internal data class SteamCreatorInfo(
+    val name: String? = null
+)
+
+@Serializable
+internal data class SteamBrowseReviews(
+    @SerialName("summary_filtered") val summaryFiltered: SteamReviewSummary? = null
+)
+
+@Serializable
+internal data class SteamReviewSummary(
+    @SerialName("review_count") val reviewCount: Int = 0,
+    @SerialName("percent_positive") val percentPositive: Int? = null
+)
+
+@Serializable
+internal data class SteamTagListResponse(
+    val response: SteamTagListBody = SteamTagListBody()
+)
+
+@Serializable
+internal data class SteamTagListBody(
+    val tags: List<SteamTagEntry> = emptyList()
+)
+
+@Serializable
+internal data class SteamTagEntry(
+    val tagid: Int = 0,
+    val name: String = ""
 )
