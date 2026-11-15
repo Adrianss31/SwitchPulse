@@ -110,7 +110,7 @@ private fun SwitchPulseRoot(
                 title = {
                     Column {
                         Text(
-                            text = if (selectedTab == 0) "Offerte Top 10" else "Filtri & Aggiornamenti",
+                            text = if (selectedTab == 0) "Offerte Top 30" else "Filtri & Aggiornamenti",
                             style = MaterialTheme.typography.titleLarge
                         )
                         Text(

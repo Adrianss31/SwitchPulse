@@ -342,8 +342,9 @@ class NintendoEshopClient(
     }
 
     /**
-     * Builds a compact ~45-55 item shortlist across Best Sellers, overall pre-score,
-     * fresh discounts (last ~7.5 days), and Switch 2 highlights so Steam quality checks stay fast.
+     * Builds a shortlist (~70-80 titles) across Best Sellers, overall pre-score,
+     * fresh discounts (last ~7.5 days), and Switch 2 highlights so Steam quality checks stay fast
+     * while covering Top 30 feeds per platform.
      */
     private fun buildShortlist(deals: List<Deal>, now: Instant): List<Deal> {
         val eligible = deals.filter { it.regularPriceEur >= 5.0 && it.discountPercent >= 20 }
@@ -353,14 +354,14 @@ class NintendoEshopClient(
 
         val picked = LinkedHashMap<String, Deal>()
         deduped.filter { it.chartRank != null }.forEach { picked[it.id] = it }
-        deduped.take(28).forEach { picked[it.id] = it }
+        deduped.take(42).forEach { picked[it.id] = it }
         deduped.filter { deal ->
             discountAgeDays(deal.startsAtIso, now) <= 7.5 &&
                 deal.discountPercent >= 35 &&
                 deal.regularPriceEur >= 10.0
-        }.take(18).forEach { picked[it.id] = it }
+        }.take(24).forEach { picked[it.id] = it }
         deduped.filter { it.platform == Platform.SWITCH_2 }
-            .take(14)
+            .take(22)
             .forEach { picked[it.id] = it }
 
         return picked.values.toList()

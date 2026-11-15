@@ -25,7 +25,12 @@ class DealsRepository(
         cachedDealsFlow,
         settingsFlow
     ) { deals, settings ->
-        DealFilterEngine.filterTopTen(deals, settings, settings.appPlatformFilter)
+        DealFilterEngine.filterTopTen(
+            rawDeals = deals,
+            settings = settings,
+            platformOverride = settings.appPlatformFilter,
+            limit = APP_FEED_LIMIT
+        )
     }
 
     suspend fun refreshDeals(): Result<List<Deal>> {
@@ -38,17 +43,10 @@ class DealsRepository(
             val widgetTop = DealFilterEngine.filterTopTen(
                 rawDeals = freshDeals,
                 settings = settings,
-                platformOverride = settings.widgetPlatformFilter
+                platformOverride = settings.widgetPlatformFilter,
+                limit = WIDGET_FEED_LIMIT
             )
-            val appTop = DealFilterEngine.filterTopTen(
-                rawDeals = freshDeals,
-                settings = settings,
-                platformOverride = settings.appPlatformFilter
-            )
-            val toPrefetch = (widgetTop + appTop)
-                .distinctBy { it.id }
-                .map { it.id to it.imageUrl }
-            coverCache.prefetchCovers(toPrefetch)
+            coverCache.prefetchCovers(widgetTop.map { it.id to it.imageUrl })
 
             EditorialBentoWidget().updateAll(context)
             freshDeals
@@ -61,9 +59,15 @@ class DealsRepository(
         val widgetTop = DealFilterEngine.filterTopTen(
             rawDeals = deals,
             settings = settings,
-            platformOverride = settings.widgetPlatformFilter
+            platformOverride = settings.widgetPlatformFilter,
+            limit = WIDGET_FEED_LIMIT
         )
         coverCache.prefetchCovers(widgetTop.map { it.id to it.imageUrl })
         EditorialBentoWidget().updateAll(context)
+    }
+
+    companion object {
+        const val APP_FEED_LIMIT = 30
+        const val WIDGET_FEED_LIMIT = 10
     }
 }
