@@ -167,9 +167,9 @@ class GeminiReranker(
                     .firstOrNull()
                     ?.content
                     ?.parts
-                    ?.firstOrNull { !it.text.isNullOrBlank() }
-                    ?.text
                     .orEmpty()
+                    .filter { it.thought != true && !it.text.isNullOrBlank() }
+                    .joinToString("\n") { it.text.orEmpty() }
                     .trim()
 
                 val parsed = parseModelScores(modelText)
@@ -389,7 +389,8 @@ internal data class GeminiContent(
 
 @Serializable
 internal data class GeminiPart(
-    val text: String? = null
+    val text: String? = null,
+    val thought: Boolean? = null
 )
 
 @Serializable
@@ -407,7 +408,8 @@ internal data class GeminiGenerateResponse(
 
 @Serializable
 internal data class GeminiCandidate(
-    val content: GeminiResponseContent? = null
+    val content: GeminiResponseContent? = null,
+    val finishReason: String? = null
 )
 
 @Serializable

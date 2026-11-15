@@ -10,7 +10,12 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -31,7 +36,8 @@ class GameInsightsClient(
     private val httpClient: OkHttpClient = defaultHttpClient(),
     private val steamAppDetailsUrl: String = "https://store.steampowered.com/api/appdetails",
     private val geminiEndpointOverride: String? = null,
-    private val steamStoreSearchUrl: String? = null
+    private val steamStoreSearchUrl: String? = null,
+    private val metacriticBaseUrl: String? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -44,6 +50,7 @@ class GameInsightsClient(
     ): GameExternalInsights = withContext(Dispatchers.IO) {
         val resolvedAppId = deal.steamAppId ?: resolveSteamAppIdOnDemand(deal)
         val steamMeta = resolvedAppId?.let { fetchSteamMetacritic(it) }
+        val directMeta = if (steamMeta == null) fetchDirectMetacritic(deal.title) else null
         val cleanKey = geminiApiKey.trim()
         val effectiveModel = geminiModel.trim().ifBlank { GeminiModels.HYDROGEN }
         val profileSig = computeProfileSignature(likedGames, userTastePrompt)
@@ -61,31 +68,41 @@ class GameInsightsClient(
         }
 
         val payload = aiResult.payload
-        val metacriticScore = payload?.metacriticScore?.takeIf { it in 1..100 }
-            ?: steamMeta?.score
+        val officialMetaScore = steamMeta?.score ?: directMeta?.score
+        val officialMetaUrl = steamMeta?.url ?: directMeta?.url
+        val metacriticScore = officialMetaScore
+            ?: payload?.metacriticScore?.takeIf { it in 1..100 }
             ?: deal.metacriticScore
-        val metacriticUrl = payload?.metacriticUrl?.takeIf { it.startsWith("http") }
-            ?: steamMeta?.url?.takeIf { it.startsWith("http") }
+        val metacriticUrl = officialMetaUrl?.takeIf { it.startsWith("http") }
+            ?: payload?.metacriticUrl?.takeIf { it.startsWith("http") }
+
+        val metaOrigin = when {
+            steamMeta?.score != null -> "Steam"
+            directMeta?.score != null -> "Metacritic"
+            else -> null
+        }
 
         val sourceLabel = when {
-            payload != null && steamMeta != null && aiResult.mode == AiMode.GROUNDED_SEARCH ->
-                "Steam + ✨ $effectiveModel (Google Search)"
-            payload != null && steamMeta != null ->
-                "Steam + ✨ $effectiveModel (Analisi AI & stima HLTB)"
+            payload != null && metaOrigin != null && aiResult.mode == AiMode.GROUNDED_SEARCH ->
+                "$metaOrigin + ✨ $effectiveModel (Google Search)"
+            payload != null && metaOrigin != null ->
+                "$metaOrigin + ✨ $effectiveModel (Analisi AI & HLTB)"
             payload != null && aiResult.mode == AiMode.GROUNDED_SEARCH ->
                 "✨ $effectiveModel (Google Search)"
             payload != null ->
                 "✨ $effectiveModel (Stima critica & Analisi AI)"
-            steamMeta != null && aiResult.errorMessage != null ->
-                "Steam Metacritic API · ${aiResult.errorMessage}"
+            metaOrigin != null && aiResult.errorMessage != null ->
+                "$metaOrigin · ${aiResult.errorMessage}"
             steamMeta != null ->
                 "Steam Metacritic API"
+            directMeta != null ->
+                "Metacritic"
             aiResult.errorMessage != null ->
                 "⚠️ ${aiResult.errorMessage}"
             cleanKey.isNotBlank() ->
                 "Lookup AI non disponibile · usa i link rapidi"
             else ->
-                "Aggiungi una chiave Gemini per analisi personalizzata, HLTB e Metacritic Switch"
+                "Aggiungi una chiave Gemini per analisi personalizzata e stime HLTB"
         }
 
         GameExternalInsights(
@@ -155,6 +172,43 @@ class GameInsightsClient(
         }
     }.getOrNull()
 
+    internal fun fetchDirectMetacritic(rawTitle: String): SteamMetacriticBlock? {
+        val baseUrl = metacriticBaseUrl?.takeIf { it.isNotBlank() }
+            ?: if (geminiEndpointOverride == null) "https://www.metacritic.com" else return null
+        val slug = buildMetacriticSlug(rawTitle)
+        if (slug.length < 2) return null
+
+        val targetUrl = "${baseUrl.trimEnd('/')}/game/$slug/"
+        return runCatching {
+            val request = Request.Builder()
+                .url(targetUrl)
+                .header("User-Agent", "Mozilla/5.0")
+                .get()
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val html = response.body?.string().orEmpty()
+                val match = LD_METASCORE_REGEX.find(html)
+                val score = match?.groupValues?.getOrNull(1)?.toIntOrNull()?.takeIf { it in 1..100 }
+                    ?: return@use null
+                SteamMetacriticBlock(score = score, url = targetUrl)
+            }
+        }.getOrNull()
+    }
+
+    internal fun buildMetacriticSlug(rawTitle: String): String {
+        val normalized = DealTitleNormalizer.normalize(
+            rawTitle
+                .replace("'", "")
+                .replace("’", "")
+                .replace("&", " and ")
+        )
+        return normalized
+            .trim()
+            .replace(Regex("\\s+"), "-")
+            .trim('-')
+    }
+
     private fun fetchWithGeminiAndFallback(
         deal: Deal,
         apiKey: String,
@@ -213,11 +267,7 @@ class GameInsightsClient(
             groundedSearch = useGoogleSearch
         )
 
-        val thinking = if (!useGoogleSearch && (modelId == GeminiModels.HYDROGEN || modelId == GeminiModels.ARGON)) {
-            GeminiThinkingConfig(thinkingLevel = "medium")
-        } else {
-            GeminiModels.thinkingConfigFor(modelId)
-        }
+        val thinking = GeminiModels.thinkingConfigFor(modelId)
 
         val reqObj = if (useGoogleSearch) {
             GeminiGenerateRequest(
@@ -225,7 +275,7 @@ class GameInsightsClient(
                 tools = listOf(GeminiTool(emptyMap())),
                 generationConfig = GeminiGenerationConfig(
                     temperature = 0.15,
-                    maxOutputTokens = 1024,
+                    maxOutputTokens = 4096,
                     thinkingConfig = thinking
                 )
             )
@@ -235,7 +285,7 @@ class GameInsightsClient(
                 generationConfig = GeminiGenerationConfig(
                     responseMimeType = "application/json",
                     temperature = 0.25,
-                    maxOutputTokens = 1024,
+                    maxOutputTokens = 4096,
                     thinkingConfig = thinking
                 )
             )
@@ -258,21 +308,24 @@ class GameInsightsClient(
             }
 
             val envelope = json.decodeFromString<GeminiGenerateResponse>(raw)
-            val allText = envelope.candidates
-                .firstOrNull()
+            val candidate = envelope.candidates.firstOrNull()
+            val allText = candidate
                 ?.content
                 ?.parts
                 .orEmpty()
+                .filter { it.thought != true && !it.text.isNullOrBlank() }
                 .mapNotNull { it.text }
                 .joinToString("\n")
                 .trim()
 
             val payload = parseGroundedPayload(allText)
             if (payload == null) {
+                val finish = candidate?.finishReason?.takeIf { it.isNotBlank() } ?: "empty"
+                val snippet = allText.replace("\n", " ").take(80)
                 GeminiInsightsResult(
                     payload = null,
                     mode = AiMode.NONE,
-                    errorMessage = "Risposta AI non interpretabile"
+                    errorMessage = "Risposta AI non interpretabile ($finish)${if (snippet.isNotBlank()) ": $snippet" else ""}"
                 )
             } else {
                 GeminiInsightsResult(payload = payload, mode = AiMode.DIRECT_KNOWLEDGE, errorMessage = null)
@@ -356,17 +409,51 @@ class GameInsightsClient(
             .removePrefix("```")
             .removeSuffix("```")
             .trim()
-        val objStart = cleaned.indexOf('{')
         val objEnd = cleaned.lastIndexOf('}')
-        if (objStart < 0 || objEnd <= objStart) return null
-        val jsonSlice = cleaned.substring(objStart, objEnd + 1)
-        return runCatching {
-            json.decodeFromString<GroundedInsightsPayload>(jsonSlice)
-        }.getOrNull()
+        if (objEnd <= 0) return null
+
+        // Scan `{` positions from left to right (and right-most standalone objects) so prefixed text cannot spoil JSON slicing.
+        val openPositions = cleaned.indices.filter { cleaned[it] == '{' && it < objEnd }
+        for (start in openPositions.asReversed()) {
+            val slice = cleaned.substring(start, objEnd + 1)
+            val parsedObj = runCatching {
+                json.parseToJsonElement(slice) as? JsonObject
+            }.getOrNull() ?: continue
+            return mapJsonObjectToPayload(parsedObj)
+        }
+        return null
+    }
+
+    private fun mapJsonObjectToPayload(obj: JsonObject): GroundedInsightsPayload {
+        fun cleanStr(key: String): String? {
+            val raw = obj[key]?.let { it as? JsonPrimitive }?.contentOrNull?.trim() ?: return null
+            if (raw.isEmpty() || raw.equals("null", ignoreCase = true) || raw.equals("n/a", ignoreCase = true) || raw == "--") {
+                return null
+            }
+            return raw
+        }
+
+        val metaRaw = obj["metacriticScore"] as? JsonPrimitive
+        val metaScore = (metaRaw?.intOrNull ?: metaRaw?.contentOrNull?.trim()?.toDoubleOrNull()?.toInt())
+            ?.takeIf { it in 1..100 }
+
+        return GroundedInsightsPayload(
+            metacriticScore = metaScore,
+            metacriticUrl = cleanStr("metacriticUrl"),
+            hltbMainHours = cleanStr("hltbMainHours"),
+            hltbMainExtraHours = cleanStr("hltbMainExtraHours"),
+            hltbCompletionistHours = cleanStr("hltbCompletionistHours"),
+            verdict = cleanStr("verdict"),
+            summaryNote = cleanStr("summaryNote")
+        )
     }
 
     companion object {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        private val LD_METASCORE_REGEX = Regex(
+            "\"@type\"\\s*:\\s*\"AggregateRating\"[^}]*?\"ratingValue\"\\s*:\\s*(\\d{1,3})",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
 
         fun computeProfileSignature(
             likedGames: List<LikedGame>,

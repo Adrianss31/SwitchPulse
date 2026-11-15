@@ -148,7 +148,8 @@ class GameInsightsClientTest {
                             )
                         } else {
                             assertTrue(!reqBody.contains("google_search"))
-                            assertTrue(reqBody.contains("\"thinkingLevel\":\"medium\""))
+                            assertTrue(reqBody.contains("\"thinkingLevel\":\"low\""))
+                            assertTrue(reqBody.contains("\"maxOutputTokens\":4096"))
                             MockResponse().setResponseCode(200).setBody(
                                 """
                                 {
@@ -156,6 +157,10 @@ class GameInsightsClientTest {
                                     {
                                       "content": {
                                         "parts": [
+                                          {
+                                            "thought": true,
+                                            "text": "Thinking about {draft}..."
+                                          },
                                           {
                                             "text": "{\"metacriticScore\":93,\"metacriticUrl\":null,\"hltbMainHours\":\"~22 ore\",\"hltbMainExtraHours\":\"~48 ore\",\"hltbCompletionistHours\":\"~95 ore\",\"verdict\":\"Imperdibile per te\",\"summaryNote\":\"Perfetto per i tuoi gusti dopo Hollow Knight.\"}"
                                           }
@@ -202,5 +207,59 @@ class GameInsightsClientTest {
         assertEquals("Imperdibile per te", insights.aiVerdict)
         assertTrue(insights.summaryNote!!.contains("Hollow Knight"))
         assertTrue(insights.sourceLabel.contains("Stima critica"))
+    }
+
+    @Test
+    fun `fetchInsights parses Metacritic JSON-LD directly by slug and handles string numbers in JSON`() = runBlocking {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.requestUrl?.encodedPath.orEmpty()
+                return when {
+                    path.endsWith("/game/ball-x-pit/") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        <html><head>
+                        <script type="application/ld+json">{"@type":"VideoGame","aggregateRating":{"@type":"AggregateRating","name":"Metascore","ratingValue":84,"reviewCount":42}}</script>
+                        </head></html>
+                        """.trimIndent()
+                    )
+                    path.endsWith(":generateContent") -> MockResponse().setResponseCode(200).setBody(
+                        """
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "text": "[{\"metacriticScore\":\"84\",\"metacriticUrl\":\"N/A\",\"hltbMainHours\":\"12 ore\",\"hltbMainExtraHours\":\"24 ore\",\"hltbCompletionistHours\":\"40 ore\",\"verdict\":\"Buon affare\",\"summaryNote\":\"Ottimo roguelite arcade.\"}]"
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val client = GameInsightsClient(
+            httpClient = OkHttpClient(),
+            steamAppDetailsUrl = server.url("/api/appdetails").toString(),
+            geminiEndpointOverride = server.url("/v1beta/models/gemini-4-hydrogen:generateContent").toString(),
+            metacriticBaseUrl = server.url("/").toString()
+        )
+
+        val ballXPit = sampleDeal(steamAppId = null).copy(title = "BALL x PIT – Nintendo Switch™ 2 Edition")
+        val insights = client.fetchInsights(deal = ballXPit, geminiApiKey = "AIzaTest")
+
+        assertEquals(84, insights.metacriticScore)
+        assertTrue(insights.metacriticUrl!!.endsWith("/game/ball-x-pit/"))
+        assertEquals("12 ore", insights.hltbMainHours)
+        assertEquals("24 ore", insights.hltbMainExtraHours)
+        assertEquals("40 ore", insights.hltbCompletionistHours)
+        assertEquals("Buon affare", insights.aiVerdict)
+        assertTrue(insights.sourceLabel.contains("Metacritic"))
     }
 }
