@@ -1,11 +1,14 @@
 package com.switchpulse.app.data
 
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.DealMatchSentiment
+import com.switchpulse.app.data.model.DealMatchSource
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.Platform
 import com.switchpulse.app.data.model.PlatformFilter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -14,7 +17,7 @@ import org.junit.Test
 class RecommendationEngineTest {
 
     @Test
-    fun `cosine similarity boosts matching micro-tags and respects anti-shovelware guardrail`() {
+    fun `cosine similarity boosts 5-star matching micro-tags and respects anti-shovelware guardrail`() {
         val liked = LikedGame(
             id = "hades-1",
             title = "Hades",
@@ -22,7 +25,8 @@ class RecommendationEngineTest {
             developer = "Supergiant Games",
             gameCategories = listOf("action", "indie"),
             steamTagIds = listOf(3959, 1716, 4885),
-            steamTagNames = listOf("Roguelite", "Roguelike", "Inferno di proiettili")
+            steamTagNames = listOf("Roguelite", "Roguelike", "Inferno di proiettili"),
+            rating = 5
         )
 
         val matchingRoguelite = Deal(
@@ -104,6 +108,8 @@ class RecommendationEngineTest {
         )
 
         assertEquals("dead-cells", ranked.first().id)
+        assertEquals(DealMatchSentiment.RECOMMENDED, ranked.first().matchSentiment)
+        assertEquals(DealMatchSource.LOCAL, ranked.first().matchSource)
         assertNotNull(ranked.first().matchReason)
         assertTrue(ranked.first().matchReason!!.contains("Hades"))
 
@@ -113,82 +119,131 @@ class RecommendationEngineTest {
     }
 
     @Test
-    fun `forYouOnlyMode amplifies semantic affinity boost and marks exact liked titles`() {
-        val liked = LikedGame(
-            id = "celeste",
-            title = "Celeste",
-            publisher = "Maddy Makes Games",
-            developer = "Maddy Makes Games",
-            gameCategories = listOf("platformer", "indie"),
-            steamTagIds = listOf(1625, 3877),
-            steamTagNames = listOf("Platform", "Platform di precisione")
+    fun `1-star rating penalizes similar games, excludes them in forYouOnlyMode, and owned backlog is filtered out`() {
+        val dislikedRacing = LikedGame(
+            id = "bad-kart",
+            title = "Bad Kart Racer",
+            gameCategories = listOf("racing"),
+            steamTagIds = listOf(699, 701),
+            steamTagNames = listOf("Corse", "Arcade"),
+            rating = 1
+        )
+        val ownedBacklog = LikedGame(
+            id = "owned-zelda",
+            title = "Zelda Echoes",
+            gameCategories = listOf("adventure"),
+            rating = null,
+            isOwned = true
         )
 
-        val exactDeal = Deal(
-            id = "celeste-eshop",
+        val ownedDeal = Deal(
+            id = "owned-zelda",
             nsuid = null,
-            title = "Celeste – Nintendo Switch",
-            publisher = "Maddy Makes Games",
-            platform = Platform.SWITCH_1,
-            regularPriceEur = 19.99,
-            discountedPriceEur = 4.99,
-            discountPercent = 75,
-            endsAtIso = null,
-            popularityRank = 20,
-            steamReviewCount = 90000,
-            hotScore = 62.0,
-            steamTagIds = listOf(1625, 3877),
-            steamTagNames = listOf("Platform", "Platform di precisione"),
-            gameCategories = listOf("platformer", "indie"),
-            eshopUrl = "https://www.nintendo.com/celeste",
-            imageUrl = ""
-        )
-
-        val other = Deal(
-            id = "generic-hit",
-            nsuid = null,
-            title = "Football Pro",
-            publisher = "Sports Co",
+            title = "Zelda Echoes",
+            publisher = "Nintendo",
             platform = Platform.SWITCH_1,
             regularPriceEur = 59.99,
-            discountedPriceEur = 29.99,
-            discountPercent = 50,
+            discountedPriceEur = 39.99,
+            discountPercent = 33,
             endsAtIso = null,
             popularityRank = 1,
-            steamReviewCount = 15000,
-            hotScore = 80.0,
-            steamTagIds = listOf(701),
-            steamTagNames = listOf("Sport"),
-            gameCategories = listOf("sports"),
-            eshopUrl = "https://www.nintendo.com/football",
+            steamReviewCount = 0,
+            hotScore = 95.0,
+            gameCategories = listOf("adventure"),
+            eshopUrl = "https://www.nintendo.com/zelda",
             imageUrl = ""
         )
 
-        val scored = RecommendationEngine.applyRecommendations(
-            deals = listOf(other, exactDeal),
-            settings = FilterSettings(
-                likedGames = listOf(liked),
-                recommendationWeight = 20,
-                forYouOnlyMode = true
-            )
+        val similarRacingDeal = Deal(
+            id = "another-kart",
+            nsuid = null,
+            title = "Turbo Kart 2",
+            publisher = "Racer Co",
+            platform = Platform.SWITCH_1,
+            regularPriceEur = 39.99,
+            discountedPriceEur = 19.99,
+            discountPercent = 50,
+            endsAtIso = null,
+            popularityRank = 2,
+            steamReviewCount = 5000,
+            hotScore = 72.0,
+            steamTagIds = listOf(699, 701),
+            steamTagNames = listOf("Corse", "Arcade"),
+            gameCategories = listOf("racing"),
+            eshopUrl = "https://www.nintendo.com/turbo",
+            imageUrl = ""
         )
 
-        val exactScored = scored.first { it.id == "celeste-eshop" }
-        val otherScored = scored.first { it.id == "generic-hit" }
-        assertEquals("Tra i tuoi preferiti ♥", exactScored.matchReason)
-        assertTrue(exactScored.personalScore > otherScored.personalScore)
+        val neutralDeal = Deal(
+            id = "neutral-rpg",
+            nsuid = null,
+            title = "Octo Story",
+            publisher = "Square Enix",
+            platform = Platform.SWITCH_1,
+            regularPriceEur = 49.99,
+            discountedPriceEur = 24.99,
+            discountPercent = 50,
+            endsAtIso = null,
+            popularityRank = 6,
+            steamReviewCount = 8000,
+            hotScore = 70.0,
+            steamTagIds = listOf(122, 4434),
+            steamTagNames = listOf("GDR", "JRPG"),
+            gameCategories = listOf("rpg"),
+            eshopUrl = "https://www.nintendo.com/octo",
+            imageUrl = ""
+        )
+
+        val normalFeed = DealFilterEngine.filterTopTen(
+            rawDeals = listOf(ownedDeal, similarRacingDeal, neutralDeal),
+            settings = FilterSettings(
+                minDiscountPercent = 0,
+                minRegularPriceEur = 0f,
+                likedGames = listOf(dislikedRacing, ownedBacklog),
+                recommendationWeight = 100,
+                forYouOnlyMode = false
+            ),
+            platformOverride = PlatformFilter.ALL,
+            limit = 30
+        )
+
+        // Owned unplayed game must be excluded completely from deals feed
+        assertFalse(normalFeed.any { it.id == "owned-zelda" })
+        // Neutral RPG must outrank discouraged racing deal despite lower base hotScore (70 < 72)
+        assertEquals("neutral-rpg", normalFeed.first().id)
+        val discouraged = normalFeed.first { it.id == "another-kart" }
+        assertEquals(DealMatchSentiment.DISCOURAGED, discouraged.matchSentiment)
+        assertTrue(discouraged.matchReason!!.contains("1★"))
+
+        // For You mode hides strongly discouraged games
+        val forYouFeed = DealFilterEngine.filterTopTen(
+            rawDeals = listOf(ownedDeal, similarRacingDeal, neutralDeal),
+            settings = FilterSettings(
+                minDiscountPercent = 0,
+                minRegularPriceEur = 0f,
+                likedGames = listOf(dislikedRacing, ownedBacklog),
+                recommendationWeight = 100,
+                forYouOnlyMode = true
+            ),
+            platformOverride = PlatformFilter.ALL,
+            limit = 30
+        )
+        assertFalse(forYouFeed.any { it.id == "another-kart" })
+        assertEquals(listOf("neutral-rpg"), forYouFeed.map { it.id })
     }
 
     @Test
-    fun `topLikedCategories prioritizes most frequent user genres`() {
+    fun `topLikedCategories prioritizes 4-5 star games and ignores 1-2 star dislikes`() {
         val likes = listOf(
-            LikedGame(id = "1", title = "A", gameCategories = listOf("action", "indie")),
-            LikedGame(id = "2", title = "B", gameCategories = listOf("rpg", "action")),
-            LikedGame(id = "3", title = "C", gameCategories = listOf("action", "adventure"))
+            LikedGame(id = "1", title = "A", gameCategories = listOf("action", "indie"), rating = 5),
+            LikedGame(id = "2", title = "B", gameCategories = listOf("rpg", "action"), rating = 4),
+            LikedGame(id = "3", title = "C", gameCategories = listOf("racing", "sports"), rating = 1),
+            LikedGame(id = "4", title = "D", gameCategories = listOf("racing"), rating = 1),
+            LikedGame(id = "5", title = "E", gameCategories = listOf("racing"), rating = null, isOwned = true)
         )
 
-        val top = RecommendationEngine.topLikedCategories(likes, limit = 2)
+        val top = RecommendationEngine.topLikedCategories(likes, limit = 3)
         assertEquals("action", top.first())
-        assertEquals(2, top.size)
+        assertFalse("racing" in top)
     }
 }

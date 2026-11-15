@@ -150,6 +150,7 @@ class NintendoEshopClient(
                 now = now
             )
             deal.copy(
+                steamAppId = steam?.appId,
                 steamReviewCount = reviewCount,
                 steamPositivePercent = positivePct,
                 steamTagIds = steam?.tagIds.orEmpty(),
@@ -163,7 +164,7 @@ class NintendoEshopClient(
 
     /**
      * Searches Nintendo Switch / Switch 2 games by title (discounted or full price)
-     * and enriches matched items with Steam micro-tags so users can seed their taste profile.
+     * and enriches matched items with Steam micro-tags so users can seed their library & ratings.
      */
     suspend fun searchGamesForProfile(query: String): List<LikedGame> = withContext(Dispatchers.IO) {
         val cleanQuery = query.trim()
@@ -173,19 +174,26 @@ class NintendoEshopClient(
             querySearch(
                 q = cleanQuery,
                 fq = "type:GAME AND (system_type:*nintendoswitch* OR system_type:*nintendoswitch2*)",
-                rows = 8
+                rows = 10
             )
         }.getOrDefault(emptyList())
 
         val candidates = docs.mapNotNull { doc ->
             val id = doc.fsId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             val title = doc.title?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val imageUrl = doc.imageUrlH16x9S
+                ?: doc.wishlistEmailBanner640w
+                ?: doc.imageUrlSqS
             LikedGame(
                 id = id,
                 title = title,
                 publisher = doc.publisher?.trim().orEmpty(),
-                gameCategories = doc.gameCategoriesTxt.orEmpty(),
-                excerpt = doc.excerpt?.trim()
+                imageUrl = imageUrl,
+                eshopUrl = DealTitleNormalizer.resolveNintendoEshopUrl(doc.url),
+                gameCategories = doc.gameCategoriesTxt.orEmpty().map { it.lowercase() },
+                excerpt = doc.excerpt?.trim(),
+                rating = null,
+                isOwned = false
             )
         }.distinctBy { DealTitleNormalizer.normalize(it.title) }
 
@@ -395,12 +403,7 @@ class NintendoEshopClient(
         }
 
         val platform = detectPlatform(doc.systemType)
-        val relativeUrl = doc.url.orEmpty()
-        val eshopUrl = when {
-            relativeUrl.startsWith("http") -> relativeUrl
-            relativeUrl.startsWith("/") -> "https://www.nintendo.com$relativeUrl"
-            else -> "https://www.nintendo.com/it-it/"
-        }
+        val eshopUrl = DealTitleNormalizer.resolveNintendoEshopUrl(doc.url)
 
         val imageUrl = doc.imageUrlH16x9S
             ?: doc.wishlistEmailBanner640w
@@ -508,7 +511,8 @@ class NintendoEshopClient(
         val browseById = fetchSteamBrowseItemsBatch(uniqueAppIds, tagMap)
 
         appIdsByNormTitle.associate { (normTitle, appId) ->
-            normTitle to (browseById[appId] ?: SteamAcclaim())
+            val enriched = (browseById[appId] ?: SteamAcclaim()).copy(appId = appId)
+            normTitle to enriched
         }
     }
 
@@ -769,6 +773,7 @@ internal data class RankedCandidate(
 )
 
 internal data class SteamAcclaim(
+    val appId: Int? = null,
     val reviewCount: Int = 0,
     val positivePercent: Int? = null,
     val tagIds: List<Int> = emptyList(),

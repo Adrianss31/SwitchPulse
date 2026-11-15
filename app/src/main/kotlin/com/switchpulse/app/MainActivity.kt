@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CollectionsBookmark
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Tune
@@ -45,7 +46,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.ui.FeedScreen
+import com.switchpulse.app.ui.GameDetailSheet
+import com.switchpulse.app.ui.LibraryScreen
 import com.switchpulse.app.ui.MainViewModel
 import com.switchpulse.app.ui.SettingsScreen
 import com.switchpulse.app.ui.theme.EshopCrimson
@@ -66,7 +70,7 @@ class MainActivity : ComponentActivity() {
             SwitchPulseTheme {
                 SwitchPulseRoot(
                     viewModel = viewModel,
-                    initialTab = if (openUpdatesInitially) 1 else 0,
+                    initialTab = if (openUpdatesInitially) 2 else 0,
                     onOpenUrl = { url ->
                         runCatching {
                             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
@@ -110,7 +114,11 @@ private fun SwitchPulseRoot(
                 title = {
                     Column {
                         Text(
-                            text = if (selectedTab == 0) "Offerte Top 30" else "Filtri & Aggiornamenti",
+                            text = when (selectedTab) {
+                                0 -> "Offerte Top 30"
+                                1 -> "La tua Libreria"
+                                else -> "Filtri & Aggiornamenti"
+                            },
                             style = MaterialTheme.typography.titleLarge
                         )
                         Text(
@@ -156,6 +164,12 @@ private fun SwitchPulseRoot(
                 NavigationBarItem(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
+                    icon = { Icon(Icons.Rounded.CollectionsBookmark, contentDescription = null) },
+                    label = { Text("Libreria") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
                     icon = { Icon(Icons.Rounded.Tune, contentDescription = null) },
                     label = { Text("Filtri & Update") }
                 )
@@ -166,7 +180,7 @@ private fun SwitchPulseRoot(
             0 -> FeedScreen(
                 state = state,
                 onSelectPlatform = viewModel::setAppPlatformFilter,
-                onOpenDeal = { deal -> onOpenUrl(deal.eshopUrl) },
+                onOpenDealDetail = viewModel::openDealDetail,
                 onHideDeal = { deal ->
                     viewModel.hideDeal(deal)
                     scope.launch {
@@ -180,11 +194,21 @@ private fun SwitchPulseRoot(
                         }
                     }
                 },
-                onToggleLike = viewModel::toggleLikeDeal,
                 onToggleForYou = viewModel::setForYouOnlyMode,
                 onRefresh = viewModel::refreshDeals,
                 onResetFilters = viewModel::resetFilters,
-                onOpenUpdateTab = { selectedTab = 1 },
+                onOpenUpdateTab = { selectedTab = 2 },
+                modifier = Modifier.padding(innerPadding)
+            )
+
+            1 -> LibraryScreen(
+                state = state,
+                onSearchGames = viewModel::searchProfileGames,
+                onClearSearchResults = viewModel::clearProfileSearchResults,
+                onSetGameRating = viewModel::setGameRating,
+                onSetGameOwned = viewModel::setGameOwned,
+                onRemoveGame = viewModel::removeLikedGame,
+                onOpenEshop = onOpenUrl,
                 modifier = Modifier.padding(innerPadding)
             )
 
@@ -203,11 +227,40 @@ private fun SwitchPulseRoot(
                     scope.launch { snackbarHostState.showSnackbar(msg) }
                 },
                 onRecommendationWeightChange = viewModel::setRecommendationWeight,
-                onSearchProfileGames = viewModel::searchProfileGames,
-                onAddLikedGame = viewModel::addLikedGame,
-                onRemoveLikedGame = viewModel::removeLikedGame,
                 onSaveGeminiApiKey = viewModel::setGeminiApiKey,
+                onSelectGeminiModel = viewModel::setGeminiModel,
+                onTestGeminiConnection = viewModel::testGeminiConnection,
+                onRerankWithGeminiNow = viewModel::rerankWithGeminiNow,
+                onOpenLibraryTab = { selectedTab = 1 },
                 modifier = Modifier.padding(innerPadding)
+            )
+        }
+
+        val activeDeal = state.selectedDeal
+        if (activeDeal != null) {
+            val activeNorm = DealTitleNormalizer.normalize(activeDeal.title)
+            val existingEntry = state.settings.likedGames.firstOrNull {
+                it.id == activeDeal.id || DealTitleNormalizer.normalize(it.title) == activeNorm
+            }
+            GameDetailSheet(
+                deal = activeDeal,
+                settings = state.settings,
+                insights = state.detailInsights,
+                isLoadingInsights = state.isLoadingInsights,
+                libraryEntry = existingEntry,
+                onDismiss = viewModel::closeDealDetail,
+                onOpenEshop = onOpenUrl,
+                onSetRating = { rating ->
+                    viewModel.setGameRating(existingEntry ?: activeDeal.toLikedGame(), rating)
+                },
+                onSetOwned = { owned ->
+                    viewModel.setGameOwned(existingEntry ?: activeDeal.toLikedGame(), owned)
+                    if (owned) {
+                        viewModel.closeDealDetail()
+                    }
+                },
+                onHideDeal = { viewModel.hideDeal(activeDeal) },
+                onRefreshInsights = { viewModel.refreshDealInsights(activeDeal) }
             )
         }
     }

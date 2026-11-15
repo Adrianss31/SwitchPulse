@@ -1,6 +1,7 @@
 package com.switchpulse.app.data
 
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.DealMatchSentiment
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.Platform
@@ -19,9 +20,20 @@ object DealFilterEngine {
     ): List<Deal> {
         val recommended = RecommendationEngine.applyRecommendations(rawDeals, settings)
         val hasScores = recommended.any { it.hotScore > 0.0 || it.personalScore > 0.0 }
+
+        val ownedGames = settings.likedGames.filter { it.isOwned }
+        val ownedIds = ownedGames.map { it.id }.toSet()
+        val ownedNormTitles = ownedGames.map { DealTitleNormalizer.normalize(it.title) }.toSet()
+
         val filtered = recommended
             .asSequence()
             .filter { deal -> deal.id !in settings.blacklistIds }
+            .filter { deal ->
+                deal.id !in ownedIds && DealTitleNormalizer.normalize(deal.title) !in ownedNormTitles
+            }
+            .filter { deal ->
+                !settings.forYouOnlyMode || deal.matchSentiment != DealMatchSentiment.DISCOURAGED
+            }
             .filter { deal -> deal.discountPercent >= settings.minDiscountPercent }
             .filter { deal -> deal.regularPriceEur >= settings.minRegularPriceEur }
             .filter { deal ->

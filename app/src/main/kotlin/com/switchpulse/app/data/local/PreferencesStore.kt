@@ -15,8 +15,10 @@ import com.switchpulse.app.BuildConfig
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
+import com.switchpulse.app.data.model.GameExternalInsights
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.PlatformFilter
+import com.switchpulse.app.data.remote.GeminiModels
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -27,7 +29,10 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 class PreferencesStore(private val context: Context) {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
 
     val settingsFlow: Flow<FilterSettings> = context.dataStore.data.map { prefs ->
         val titlesMapJson = prefs[KEY_BLACKLIST_TITLES].orEmpty()
@@ -36,11 +41,7 @@ class PreferencesStore(private val context: Context) {
             else json.decodeFromString<Map<String, String>>(titlesMapJson)
         }.getOrDefault(emptyMap())
 
-        val likedJson = prefs[KEY_LIKED_GAMES_JSON].orEmpty()
-        val likedGames = runCatching {
-            if (likedJson.isBlank()) emptyList()
-            else json.decodeFromString<List<LikedGame>>(likedJson)
-        }.getOrDefault(emptyList())
+        val likedGames = readLikedList(prefs[KEY_LIKED_GAMES_JSON])
 
         FilterSettings(
             minDiscountPercent = prefs[KEY_MIN_DISCOUNT] ?: 30,
@@ -54,6 +55,9 @@ class PreferencesStore(private val context: Context) {
             recommendationWeight = prefs[KEY_RECOMMENDATION_WEIGHT] ?: 50,
             forYouOnlyMode = prefs[KEY_FOR_YOU_MODE] ?: false,
             geminiApiKey = prefs[KEY_GEMINI_API_KEY] ?: "",
+            geminiModel = prefs[KEY_GEMINI_MODEL]?.takeIf { it.isNotBlank() } ?: GeminiModels.HYDROGEN,
+            geminiStatusSummary = prefs[KEY_GEMINI_STATUS_SUMMARY] ?: "",
+            geminiSignature = prefs[KEY_GEMINI_SIGNATURE] ?: "",
             githubRepo = prefs[KEY_GITHUB_REPO] ?: BuildConfig.DEFAULT_GITHUB_REPO,
             autoCheckUpdates = prefs[KEY_AUTO_CHECK_UPDATES] ?: true,
             lastSyncEpochMs = prefs[KEY_LAST_SYNC_MS] ?: 0L
@@ -70,11 +74,13 @@ class PreferencesStore(private val context: Context) {
 
     suspend fun getCachedDeals(): List<Deal> = cachedDealsFlow.first()
 
-    suspend fun saveCachedDeals(deals: List<Deal>, syncEpochMs: Long) {
+    suspend fun saveCachedDeals(deals: List<Deal>, syncEpochMs: Long? = null) {
         val encoded = json.encodeToString(deals)
         context.dataStore.edit { prefs ->
             prefs[KEY_CACHED_DEALS_JSON] = encoded
-            prefs[KEY_LAST_SYNC_MS] = syncEpochMs
+            if (syncEpochMs != null) {
+                prefs[KEY_LAST_SYNC_MS] = syncEpochMs
+            }
         }
     }
 
@@ -132,33 +138,26 @@ class PreferencesStore(private val context: Context) {
         }
     }
 
-    suspend fun toggleLikedGame(game: LikedGame): Boolean {
-        var added = false
-        context.dataStore.edit { prefs ->
-            val current = readLikedList(prefs[KEY_LIKED_GAMES_JSON]).toMutableList()
-            val targetNorm = DealTitleNormalizer.normalize(game.title)
-            val existingIdx = current.indexOfFirst {
-                it.id == game.id || DealTitleNormalizer.normalize(it.title) == targetNorm
-            }
-            if (existingIdx >= 0) {
-                current.removeAt(existingIdx)
-                added = false
-            } else {
-                current.add(0, game)
-                added = true
-            }
-            prefs[KEY_LIKED_GAMES_JSON] = json.encodeToString(current)
+    suspend fun setGameRating(game: LikedGame, rating: Int?) {
+        val cleanRating = rating?.coerceIn(1, 5)
+        mutateLibraryGame(game) { existing ->
+            val nextOwned = existing?.isOwned ?: game.isOwned
+            val resolved = mergeGameMetadata(existing, game).copy(
+                rating = cleanRating,
+                isOwned = nextOwned
+            )
+            if (resolved.rating == null && !resolved.isOwned) null else resolved
         }
-        return added
     }
 
-    suspend fun addLikedGame(game: LikedGame) {
-        context.dataStore.edit { prefs ->
-            val current = readLikedList(prefs[KEY_LIKED_GAMES_JSON]).toMutableList()
-            val targetNorm = DealTitleNormalizer.normalize(game.title)
-            current.removeAll { it.id == game.id || DealTitleNormalizer.normalize(it.title) == targetNorm }
-            current.add(0, game)
-            prefs[KEY_LIKED_GAMES_JSON] = json.encodeToString(current)
+    suspend fun setGameOwned(game: LikedGame, owned: Boolean) {
+        mutateLibraryGame(game) { existing ->
+            val nextRating = existing?.rating ?: game.rating
+            val resolved = mergeGameMetadata(existing, game).copy(
+                rating = nextRating,
+                isOwned = owned
+            )
+            if (resolved.rating == null && !resolved.isOwned) null else resolved
         }
     }
 
@@ -166,7 +165,55 @@ class PreferencesStore(private val context: Context) {
         context.dataStore.edit { prefs ->
             val current = readLikedList(prefs[KEY_LIKED_GAMES_JSON]).filterNot { it.id == gameId }
             prefs[KEY_LIKED_GAMES_JSON] = json.encodeToString(current)
+            prefs[KEY_GEMINI_SIGNATURE] = ""
         }
+    }
+
+    private suspend fun mutateLibraryGame(
+        candidate: LikedGame,
+        transform: (LikedGame?) -> LikedGame?
+    ) {
+        context.dataStore.edit { prefs ->
+            val current = readLikedList(prefs[KEY_LIKED_GAMES_JSON]).toMutableList()
+            val targetNorm = DealTitleNormalizer.normalize(candidate.title)
+            val existingIdx = current.indexOfFirst {
+                it.id == candidate.id || DealTitleNormalizer.normalize(it.title) == targetNorm
+            }
+            val existing = existingIdx.takeIf { it >= 0 }?.let { current[it] }
+            val updated = transform(existing)
+
+            if (existingIdx >= 0) {
+                current.removeAt(existingIdx)
+            }
+            if (updated != null) {
+                current.add(0, updated)
+            }
+            prefs[KEY_LIKED_GAMES_JSON] = json.encodeToString(current)
+            // Rating/library edits invalidate previous AI cache signature if rating changed.
+            if (existing?.rating != updated?.rating) {
+                prefs[KEY_GEMINI_SIGNATURE] = ""
+            }
+        }
+    }
+
+    private fun mergeGameMetadata(existing: LikedGame?, incoming: LikedGame): LikedGame {
+        if (existing == null) {
+            return incoming.copy(
+                addedAtMs = if (incoming.addedAtMs > 0L) incoming.addedAtMs else System.currentTimeMillis()
+            )
+        }
+        return existing.copy(
+            title = existing.title.ifBlank { incoming.title },
+            publisher = existing.publisher.ifBlank { incoming.publisher },
+            developer = existing.developer ?: incoming.developer,
+            imageUrl = existing.imageUrl ?: incoming.imageUrl,
+            eshopUrl = existing.eshopUrl ?: incoming.eshopUrl,
+            gameCategories = existing.gameCategories.ifEmpty { incoming.gameCategories },
+            steamTagIds = existing.steamTagIds.ifEmpty { incoming.steamTagIds },
+            steamTagNames = existing.steamTagNames.ifEmpty { incoming.steamTagNames },
+            excerpt = existing.excerpt ?: incoming.excerpt,
+            addedAtMs = if (existing.addedAtMs > 0L) existing.addedAtMs else System.currentTimeMillis()
+        )
     }
 
     suspend fun updateRecommendationWeight(weight: Int) {
@@ -178,7 +225,60 @@ class PreferencesStore(private val context: Context) {
     }
 
     suspend fun updateGeminiApiKey(apiKey: String) {
-        context.dataStore.edit { it[KEY_GEMINI_API_KEY] = apiKey.trim() }
+        context.dataStore.edit {
+            it[KEY_GEMINI_API_KEY] = apiKey.trim()
+            it[KEY_GEMINI_SIGNATURE] = ""
+            if (apiKey.trim().isBlank()) {
+                it[KEY_GEMINI_STATUS_SUMMARY] = ""
+            }
+        }
+    }
+
+    suspend fun updateGeminiModel(modelId: String) {
+        val clean = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
+        context.dataStore.edit {
+            it[KEY_GEMINI_MODEL] = clean
+            it[KEY_GEMINI_SIGNATURE] = ""
+        }
+    }
+
+    suspend fun saveGeminiRunState(statusSummary: String, signature: String) {
+        context.dataStore.edit {
+            it[KEY_GEMINI_STATUS_SUMMARY] = statusSummary
+            it[KEY_GEMINI_SIGNATURE] = signature
+        }
+    }
+
+    suspend fun getCachedInsight(dealId: String): GameExternalInsights? {
+        val raw = context.dataStore.data.first()[KEY_INSIGHTS_CACHE_JSON].orEmpty()
+        if (raw.isBlank()) return null
+        val map = runCatching {
+            json.decodeFromString<Map<String, GameExternalInsights>>(raw)
+        }.getOrDefault(emptyMap())
+        return map[dealId]
+    }
+
+    suspend fun saveCachedInsight(insight: GameExternalInsights) {
+        context.dataStore.edit { prefs ->
+            val raw = prefs[KEY_INSIGHTS_CACHE_JSON].orEmpty()
+            val current = if (raw.isBlank()) {
+                mutableMapOf()
+            } else {
+                runCatching {
+                    json.decodeFromString<Map<String, GameExternalInsights>>(raw).toMutableMap()
+                }.getOrDefault(mutableMapOf())
+            }
+            current[insight.dealId] = insight
+            val trimmed = if (current.size > 40) {
+                current.entries
+                    .sortedByDescending { it.value.fetchedAtMs }
+                    .take(40)
+                    .associate { it.key to it.value }
+            } else {
+                current
+            }
+            prefs[KEY_INSIGHTS_CACHE_JSON] = json.encodeToString(trimmed)
+        }
     }
 
     private fun readLikedList(raw: String?): List<LikedGame> {
@@ -210,6 +310,10 @@ class PreferencesStore(private val context: Context) {
         private val KEY_RECOMMENDATION_WEIGHT = intPreferencesKey("recommendation_weight")
         private val KEY_FOR_YOU_MODE = booleanPreferencesKey("for_you_mode")
         private val KEY_GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
+        private val KEY_GEMINI_MODEL = stringPreferencesKey("gemini_model")
+        private val KEY_GEMINI_STATUS_SUMMARY = stringPreferencesKey("gemini_status_summary")
+        private val KEY_GEMINI_SIGNATURE = stringPreferencesKey("gemini_signature")
+        private val KEY_INSIGHTS_CACHE_JSON = stringPreferencesKey("insights_cache_json")
         private val KEY_GITHUB_REPO = stringPreferencesKey("github_repo")
         private val KEY_AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         private val KEY_LAST_SYNC_MS = longPreferencesKey("last_sync_ms")

@@ -1,15 +1,31 @@
 package com.switchpulse.app.data
 
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.DealMatchSentiment
+import com.switchpulse.app.data.model.DealMatchSource
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.LikedGame
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
+data class DealAffinityBreakdown(
+    val positiveMatchPercent: Int,
+    val negativeMatchPercent: Int,
+    val netAffinityPercent: Int,
+    val sharedPositiveLabels: List<String>,
+    val sharedNegativeLabels: List<String>,
+    val closestLikedTitle: String?,
+    val closestDislikedTitle: String?,
+    val aiScore: Int?,
+    val aiReason: String?
+)
+
 /**
- * Computes on-device taste affinity scores using weighted Cosine Similarity over Steam community
- * micro-tags, developers, Nintendo categories, publishers, and extracted subgenre keywords,
- * optionally blended with Gemini semantic rerank scores.
+ * Computes on-device taste affinity & repulsion scores using weighted Cosine Similarity over Steam
+ * community micro-tags, developers, Nintendo categories, publishers, and extracted subgenres,
+ * calibrated from 1-5★ ratings and optionally blended with Gemini 4 Hydrogen semantic reranking.
  */
 object RecommendationEngine {
 
@@ -46,37 +62,44 @@ object RecommendationEngine {
         deals: List<Deal>,
         settings: FilterSettings
     ): List<Deal> {
-        val liked = settings.likedGames
+        val positiveGames = settings.likedGames.filter { it.isPositiveRating }
+        val negativeGames = settings.likedGames.filter { it.isNegativeRating }
+        val ratedGames = settings.likedGames.filter { it.rating != null }
+
         val weightRatio = if (settings.forYouOnlyMode) {
             1.0
         } else {
             settings.recommendationWeight.coerceIn(0, 100) / 100.0
         }
 
-        if (liked.isEmpty() || weightRatio <= 0.0) {
+        if ((positiveGames.isEmpty() && negativeGames.isEmpty()) || weightRatio <= 0.0) {
             return deals.map { deal ->
                 deal.copy(
                     personalScore = deal.hotScore,
-                    matchReason = null
+                    matchReason = null,
+                    matchSource = DealMatchSource.NONE,
+                    matchSentiment = DealMatchSentiment.NONE
                 )
             }
         }
 
-        val likedVectors = liked.map { game ->
-            game to buildFeatureVector(
-                steamTagIds = game.steamTagIds,
-                steamTagNames = game.steamTagNames,
-                developer = game.developer,
-                publisher = game.publisher,
-                categories = game.gameCategories,
-                title = game.title,
-                excerpt = game.excerpt
-            )
+        val posVectors = positiveGames.map { game ->
+            val weight = starWeight(game.rating)
+            val bundle = buildFeatureVector(game)
+            game to bundle.copy(weights = scaleVector(bundle.weights, weight))
         }
-        val profileVector = mergeVectors(likedVectors.map { it.second.weights })
-        val likedNormTitles = liked.map { DealTitleNormalizer.normalize(it.title) }.toSet()
+        val negVectors = negativeGames.map { game ->
+            val weight = abs(starWeight(game.rating))
+            val bundle = buildFeatureVector(game)
+            game to bundle.copy(weights = scaleVector(bundle.weights, weight))
+        }
+
+        val posProfile = mergeVectors(posVectors.map { it.second.weights })
+        val negProfile = mergeVectors(negVectors.map { it.second.weights })
+        val ratedByNormTitle = ratedGames.associateBy { DealTitleNormalizer.normalize(it.title) }
 
         val maxBoost = if (settings.forYouOnlyMode) 56.0 else 28.0
+        val maxPenalty = if (settings.forYouOnlyMode) 60.0 else 32.0
 
         return deals.map { deal ->
             val dealFeatures = buildFeatureVector(
@@ -89,54 +112,140 @@ object RecommendationEngine {
                 excerpt = deal.excerpt
             )
 
-            val cosine = cosineSimilarity(profileVector, dealFeatures.weights)
-                .coerceIn(0.0, 1.0)
-            val semanticRatio = deal.aiAffinityScore?.let { (it / 100.0).coerceIn(0.0, 1.0) }
-            val combinedAffinity = if (semanticRatio != null) {
-                semanticRatio * 0.70 + cosine * 0.30
+            val posSim = cosineSimilarity(posProfile, dealFeatures.weights).coerceIn(0.0, 1.0)
+            val negSim = cosineSimilarity(negProfile, dealFeatures.weights).coerceIn(0.0, 1.0)
+            val localAffinity = (posSim - negSim * 0.85).coerceIn(-1.0, 1.0)
+
+            val semanticCentered = deal.aiAffinityScore?.let { ((it - 50.0) / 50.0).coerceIn(-1.0, 1.0) }
+            val combinedAffinity = if (semanticCentered != null) {
+                semanticCentered * 0.70 + localAffinity * 0.30
             } else {
-                cosine
+                localAffinity
             }
 
-            // Anti-shovelware guardrail: unverified low-acclaim titles cannot ride tag overlap to the top.
+            // Anti-shovelware guardrail: unverified low-acclaim titles cannot ride positive tag overlap.
             val isVerifiedQuality = deal.steamReviewCount >= 300 ||
                 deal.chartRank != null ||
                 deal.publisher.lowercase().contains("nintendo")
             val qualityScale = if (isVerifiedQuality) 1.0 else 0.25
 
-            val affinityBoost = combinedAffinity * maxBoost * weightRatio * qualityScale
-            val isExactLiked = DealTitleNormalizer.normalize(deal.title) in likedNormTitles
-
-            val reason = when {
-                isExactLiked -> "Tra i tuoi preferiti ♥"
-                !isVerifiedQuality || combinedAffinity < 0.14 -> null
-                !deal.aiReason.isNullOrBlank() -> deal.aiReason
-                else -> buildLocalReason(
-                    likedVectors = likedVectors,
-                    dealFeatures = dealFeatures
-                )
+            val adjustment = if (combinedAffinity >= 0.0) {
+                combinedAffinity * maxBoost * weightRatio * qualityScale
+            } else {
+                combinedAffinity * maxPenalty * weightRatio
             }
 
-            val baseScore = if (deal.hotScore > 0.0) deal.hotScore else (50.0 - deal.popularityRank.coerceAtMost(49)).coerceAtLeast(1.0)
+            val exactRated = ratedByNormTitle[DealTitleNormalizer.normalize(deal.title)]
+            val hasAiReason = !deal.aiReason.isNullOrBlank() && deal.aiAffinityScore != null
+
+            var reason: String? = null
+            var source = DealMatchSource.NONE
+            var sentiment = DealMatchSentiment.NONE
+
+            when {
+                exactRated?.rating != null -> {
+                    reason = "Il tuo voto: ${exactRated.rating}★"
+                    source = DealMatchSource.LOCAL
+                    sentiment = when {
+                        exactRated.rating >= 4 -> DealMatchSentiment.RECOMMENDED
+                        exactRated.rating <= 2 -> DealMatchSentiment.DISCOURAGED
+                        else -> DealMatchSentiment.NONE
+                    }
+                }
+                combinedAffinity >= 0.14 && isVerifiedQuality -> {
+                    sentiment = DealMatchSentiment.RECOMMENDED
+                    if (hasAiReason) {
+                        reason = deal.aiReason
+                        source = DealMatchSource.GEMINI
+                    } else {
+                        reason = buildAnchorReason(posVectors, dealFeatures, positive = true)
+                        source = if (reason != null) DealMatchSource.LOCAL else DealMatchSource.NONE
+                    }
+                }
+                combinedAffinity <= -0.16 -> {
+                    sentiment = DealMatchSentiment.DISCOURAGED
+                    val aiScore = deal.aiAffinityScore
+                    if (hasAiReason && aiScore != null && aiScore < 42.0) {
+                        reason = deal.aiReason
+                        source = DealMatchSource.GEMINI
+                    } else {
+                        reason = buildAnchorReason(negVectors, dealFeatures, positive = false)
+                        source = if (reason != null) DealMatchSource.LOCAL else DealMatchSource.NONE
+                    }
+                }
+            }
+
+            val baseScore = if (deal.hotScore > 0.0) {
+                deal.hotScore
+            } else {
+                (50.0 - deal.popularityRank.coerceAtMost(49)).coerceAtLeast(1.0)
+            }
+
             deal.copy(
-                personalScore = baseScore + affinityBoost,
-                matchReason = reason
+                personalScore = (baseScore + adjustment).coerceAtLeast(0.5),
+                matchReason = reason,
+                matchSource = source,
+                matchSentiment = sentiment
             )
         }
     }
 
     /**
-     * Picks up to 3 top Nintendo eShop categories from the user's liked games so the fetch step
-     * can also pull niche discounted matches that sit deeper in global popularity.
+     * Detailed explainability summary shown in the per-game Detail Sheet.
+     */
+    fun explainDeal(deal: Deal, settings: FilterSettings): DealAffinityBreakdown {
+        val positiveGames = settings.likedGames.filter { it.isPositiveRating }
+        val negativeGames = settings.likedGames.filter { it.isNegativeRating }
+
+        val posVectors = positiveGames.map { it to buildFeatureVector(it) }
+        val negVectors = negativeGames.map { it to buildFeatureVector(it) }
+        val dealFeatures = buildFeatureVector(
+            steamTagIds = deal.steamTagIds,
+            steamTagNames = deal.steamTagNames,
+            developer = deal.developer,
+            publisher = deal.publisher,
+            categories = deal.gameCategories,
+            title = deal.title,
+            excerpt = deal.excerpt
+        )
+
+        val posProfile = mergeVectors(posVectors.map { (g, b) -> scaleVector(b.weights, starWeight(g.rating)) })
+        val negProfile = mergeVectors(negVectors.map { (g, b) -> scaleVector(b.weights, abs(starWeight(g.rating))) })
+
+        val posSim = cosineSimilarity(posProfile, dealFeatures.weights).coerceIn(0.0, 1.0)
+        val negSim = cosineSimilarity(negProfile, dealFeatures.weights).coerceIn(0.0, 1.0)
+        val localNet = (posSim - negSim * 0.85).coerceIn(-1.0, 1.0)
+
+        val posAnchor = closestAnchor(posVectors, dealFeatures)
+        val negAnchor = closestAnchor(negVectors, dealFeatures)
+
+        return DealAffinityBreakdown(
+            positiveMatchPercent = (posSim * 100.0).roundToInt(),
+            negativeMatchPercent = (negSim * 100.0).roundToInt(),
+            netAffinityPercent = (localNet * 100.0).roundToInt(),
+            sharedPositiveLabels = posAnchor?.second.orEmpty(),
+            sharedNegativeLabels = negAnchor?.second.orEmpty(),
+            closestLikedTitle = posAnchor?.first?.title,
+            closestDislikedTitle = negAnchor?.first?.title,
+            aiScore = deal.aiAffinityScore?.roundToInt(),
+            aiReason = deal.aiReason
+        )
+    }
+
+    /**
+     * Picks up to 3 top Nintendo eShop categories from positively rated games (4-5★) so the fetch
+     * step pulls relevant niche discounts without amplifying 1-2★ dislikes.
      */
     fun topLikedCategories(likedGames: List<LikedGame>, limit: Int = 3): List<String> {
-        if (likedGames.isEmpty()) return emptyList()
-        val counts = HashMap<String, Int>()
-        likedGames.forEach { game ->
+        val positive = likedGames.filter { it.isPositiveRating }
+        if (positive.isEmpty()) return emptyList()
+        val counts = HashMap<String, Double>()
+        positive.forEach { game ->
+            val w = starWeight(game.rating)
             game.gameCategories.forEach { cat ->
                 val clean = cat.trim().lowercase()
                 if (clean.isNotBlank()) {
-                    counts[clean] = (counts[clean] ?: 0) + 1
+                    counts[clean] = (counts[clean] ?: 0.0) + w
                 }
             }
         }
@@ -146,43 +255,82 @@ object RecommendationEngine {
             .map { it.key }
     }
 
-    private fun buildLocalReason(
-        likedVectors: List<Pair<LikedGame, FeatureBundle>>,
-        dealFeatures: FeatureBundle
+    internal fun starWeight(rating: Int?): Double = when (rating) {
+        5 -> 1.0
+        4 -> 0.55
+        3 -> 0.0
+        2 -> -0.50
+        1 -> -0.95
+        else -> 0.0
+    }
+
+    private fun buildAnchorReason(
+        vectors: List<Pair<LikedGame, FeatureBundle>>,
+        dealFeatures: FeatureBundle,
+        positive: Boolean
     ): String? {
-        var bestLiked: LikedGame? = null
-        var bestSim = 0.0
-        var bestBundle: FeatureBundle? = null
-
-        likedVectors.forEach { (likedGame, bundle) ->
-            val sim = cosineSimilarity(bundle.weights, dealFeatures.weights)
-            if (sim > bestSim) {
-                bestSim = sim
-                bestLiked = likedGame
-                bestBundle = bundle
-            }
-        }
-
-        val anchor = bestLiked ?: return null
-        val sharedLabels = bestBundle?.labels.orEmpty()
-            .filterKeys { it in dealFeatures.weights }
-            .entries
-            .sortedByDescending { (dealFeatures.weights[it.key] ?: 0.0) }
-            .map { it.value }
-            .distinct()
-            .take(2)
-
+        val match = closestAnchor(vectors, dealFeatures) ?: return null
+        val anchor = match.first
+        val sharedLabels = match.second
         val shortAnchorTitle = anchor.title
             .replace(Regex("\\s*[–\\-]\\s*Nintendo Switch.*$", RegexOption.IGNORE_CASE), "")
             .take(22)
             .trim()
 
-        return if (sharedLabels.isNotEmpty()) {
-            "Simile a $shortAnchorTitle · ${sharedLabels.joinToString(", ")}"
+        return if (positive) {
+            if (sharedLabels.isNotEmpty()) {
+                "Simile a $shortAnchorTitle · ${sharedLabels.joinToString(", ")}"
+            } else {
+                "Affine a $shortAnchorTitle"
+            }
         } else {
-            "Affine a $shortAnchorTitle"
+            val stars = anchor.rating?.let { " (${it}★)" }.orEmpty()
+            if (sharedLabels.isNotEmpty()) {
+                "Poco affine: ricorda $shortAnchorTitle$stars · ${sharedLabels.joinToString(", ")}"
+            } else {
+                "Sconsigliato: vicino a $shortAnchorTitle$stars"
+            }
         }
     }
+
+    private fun closestAnchor(
+        vectors: List<Pair<LikedGame, FeatureBundle>>,
+        dealFeatures: FeatureBundle
+    ): Pair<LikedGame, List<String>>? {
+        var bestGame: LikedGame? = null
+        var bestSim = 0.0
+        var bestBundle: FeatureBundle? = null
+
+        vectors.forEach { (game, bundle) ->
+            val sim = cosineSimilarity(bundle.weights, dealFeatures.weights)
+            if (sim > bestSim) {
+                bestSim = sim
+                bestGame = game
+                bestBundle = bundle
+            }
+        }
+        val anchor = bestGame ?: return null
+        if (bestSim <= 0.0) return null
+
+        val sharedLabels = bestBundle?.labels.orEmpty()
+            .filterKeys { it in dealFeatures.weights }
+            .entries
+            .sortedByDescending { dealFeatures.weights[it.key] ?: 0.0 }
+            .map { it.value }
+            .distinct()
+            .take(2)
+        return anchor to sharedLabels
+    }
+
+    private fun buildFeatureVector(game: LikedGame): FeatureBundle = buildFeatureVector(
+        steamTagIds = game.steamTagIds,
+        steamTagNames = game.steamTagNames,
+        developer = game.developer,
+        publisher = game.publisher,
+        categories = game.gameCategories,
+        title = game.title,
+        excerpt = game.excerpt
+    )
 
     private fun buildFeatureVector(
         steamTagIds: List<Int>,
@@ -237,6 +385,11 @@ object RecommendationEngine {
         }
 
         return FeatureBundle(weights = weights, labels = labels)
+    }
+
+    private fun scaleVector(vec: Map<String, Double>, scale: Double): Map<String, Double> {
+        if (scale == 1.0) return vec
+        return vec.mapValues { (_, v) -> v * scale }
     }
 
     private fun mergeVectors(vectors: List<Map<String, Double>>): Map<String, Double> {

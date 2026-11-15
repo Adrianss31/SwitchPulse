@@ -35,6 +35,20 @@ enum class PlatformFilter {
 }
 
 @Serializable
+enum class DealMatchSource {
+    NONE,
+    LOCAL,
+    GEMINI
+}
+
+@Serializable
+enum class DealMatchSentiment {
+    NONE,
+    RECOMMENDED,
+    DISCOURAGED
+}
+
+@Serializable
 data class Deal(
     val id: String,
     val nsuid: String?,
@@ -51,6 +65,7 @@ data class Deal(
     val startsAtIso: String? = null,
     val releasedAtIso: String? = null,
     val chartRank: Int? = null,
+    val steamAppId: Int? = null,
     val steamReviewCount: Int = 0,
     val steamPositivePercent: Int? = null,
     val metacriticScore: Int? = null,
@@ -63,30 +78,66 @@ data class Deal(
     val aiAffinityScore: Double? = null,
     val aiReason: String? = null,
     val personalScore: Double = 0.0,
-    val matchReason: String? = null
+    val matchReason: String? = null,
+    val matchSource: DealMatchSource = DealMatchSource.NONE,
+    val matchSentiment: DealMatchSentiment = DealMatchSentiment.NONE
 ) {
-    fun toLikedGame(): LikedGame = LikedGame(
+    fun toLikedGame(
+        rating: Int? = null,
+        isOwned: Boolean = false
+    ): LikedGame = LikedGame(
         id = id,
         title = title,
         publisher = publisher,
         developer = developer,
+        imageUrl = imageUrl,
+        eshopUrl = eshopUrl,
         gameCategories = gameCategories,
         steamTagIds = steamTagIds,
         steamTagNames = steamTagNames,
-        excerpt = excerpt
+        excerpt = excerpt,
+        rating = rating,
+        isOwned = isOwned,
+        addedAtMs = System.currentTimeMillis()
     )
 }
 
+/**
+ * Entry in the user's personal Library & Taste Profile.
+ * Supports independent 1-5 star ratings (attraction/repulsion) and "owned" status (backlog
+ * excluded from deal feeds without requiring a rating).
+ */
 @Serializable
 data class LikedGame(
     val id: String,
     val title: String,
     val publisher: String = "",
     val developer: String? = null,
+    val imageUrl: String? = null,
+    val eshopUrl: String? = null,
     val gameCategories: List<String> = emptyList(),
     val steamTagIds: List<Int> = emptyList(),
     val steamTagNames: List<String> = emptyList(),
-    val excerpt: String? = null
+    val excerpt: String? = null,
+    val rating: Int? = 5,
+    val isOwned: Boolean = false,
+    val addedAtMs: Long = 0L
+) {
+    val isPositiveRating: Boolean get() = (rating ?: 0) >= 4
+    val isNegativeRating: Boolean get() = rating != null && rating <= 2
+}
+
+@Serializable
+data class GameExternalInsights(
+    val dealId: String,
+    val metacriticScore: Int? = null,
+    val metacriticUrl: String? = null,
+    val hltbMainHours: String? = null,
+    val hltbMainExtraHours: String? = null,
+    val hltbCompletionistHours: String? = null,
+    val summaryNote: String? = null,
+    val sourceLabel: String = "",
+    val fetchedAtMs: Long = 0L
 )
 
 /**
@@ -109,6 +160,15 @@ object DealTitleNormalizer {
             .trim()
         return cleaned.ifEmpty { title.lowercase().trim() }
     }
+
+    fun resolveNintendoEshopUrl(rawUrl: String?): String {
+        val trimmed = rawUrl.orEmpty().trim()
+        return when {
+            trimmed.startsWith("http") -> trimmed
+            trimmed.startsWith("/") -> "https://www.nintendo.com$trimmed"
+            else -> "https://www.nintendo.com/it-it/"
+        }
+    }
 }
 
 data class FilterSettings(
@@ -123,6 +183,9 @@ data class FilterSettings(
     val recommendationWeight: Int = 50,
     val forYouOnlyMode: Boolean = false,
     val geminiApiKey: String = "",
+    val geminiModel: String = "gemini-4-hydrogen",
+    val geminiStatusSummary: String = "",
+    val geminiSignature: String = "",
     val githubRepo: String = "",
     val autoCheckUpdates: Boolean = true,
     val lastSyncEpochMs: Long = 0L

@@ -9,6 +9,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -45,14 +46,23 @@ class GeminiRerankerTest {
         imageUrl = ""
     )
 
-    private fun sampleLiked() = LikedGame(
-        id = "like-1",
-        title = "Ori and the Blind Forest",
-        steamTagNames = listOf("Metroidvania", "Platform")
+    private fun sampleRatedGames() = listOf(
+        LikedGame(
+            id = "like-1",
+            title = "Ori and the Blind Forest",
+            steamTagNames = listOf("Metroidvania", "Platform"),
+            rating = 5
+        ),
+        LikedGame(
+            id = "dislike-1",
+            title = "Kart 99",
+            steamTagNames = listOf("Corse"),
+            rating = 1
+        )
     )
 
     @Test
-    fun `rerank parses structured json response including markdown fences`() = runBlocking {
+    fun `rerank sends thinkingLevel low, includes 1-star dislikes, and returns diagnostic outcome`() = runBlocking {
         val body = """
             {
               "candidates": [
@@ -72,42 +82,54 @@ class GeminiRerankerTest {
 
         val reranker = GeminiReranker(
             httpClient = OkHttpClient(),
-            endpointBaseUrl = server.url("/v1beta/models/gemini-2.5-flash-lite:generateContent").toString()
+            endpointBaseUrl = server.url("/v1beta/models/gemini-4-hydrogen:generateContent").toString()
         )
 
-        val result = reranker.rerank(
+        val outcome = reranker.rerank(
             apiKey = "AIzaTestKey",
-            likedGames = listOf(sampleLiked()),
-            candidates = listOf(sampleDeal())
+            likedGames = sampleRatedGames(),
+            candidates = listOf(sampleDeal()),
+            modelId = GeminiModels.HYDROGEN
         )
 
         val recorded = server.takeRequest()
+        val requestJson = recorded.body.readUtf8()
         assertEquals("AIzaTestKey", recorded.getHeader("x-goog-api-key"))
-        assertEquals(94.0, result.getValue("301").score, 0.001)
-        assertEquals("Metroidvania oscuro come Ori", result.getValue("301").reason)
+        assertTrue(requestJson.contains("\"thinkingLevel\":\"low\""))
+        assertTrue(requestJson.contains("[5★] Ori and the Blind Forest"))
+        assertTrue(requestJson.contains("[1★] Kart 99"))
+        assertFalse(outcome.isError)
+        assertTrue(outcome.statusSummary.contains("gemini-4-hydrogen"))
+        assertEquals(94.0, outcome.scores.getValue("301").score, 0.001)
+        assertEquals("Metroidvania oscuro come Ori", outcome.scores.getValue("301").reason)
     }
 
     @Test
-    fun `rerank degrades cleanly on blank key or unauthorized http error`() = runBlocking {
+    fun `rerank surfaces explicit error diagnostic on HTTP 401 and testKey works`() = runBlocking {
         val reranker = GeminiReranker(
             httpClient = OkHttpClient(),
-            endpointBaseUrl = server.url("/v1beta/models/gemini-2.5-flash-lite:generateContent").toString()
+            endpointBaseUrl = server.url("/v1beta/models/gemini-4-hydrogen:generateContent").toString()
         )
 
-        val emptyWhenNoKey = reranker.rerank(
-            apiKey = "   ",
-            likedGames = listOf(sampleLiked()),
-            candidates = listOf(sampleDeal())
+        server.enqueue(
+            MockResponse().setResponseCode(401).setBody("""{"error":{"code":401,"message":"API key not valid."}}""")
         )
-        assertTrue(emptyWhenNoKey.isEmpty())
-        assertEquals(0, server.requestCount)
-
-        server.enqueue(MockResponse().setResponseCode(401).setBody("Unauthorized"))
-        val emptyOnError = reranker.rerank(
+        val errOutcome = reranker.rerank(
             apiKey = "bad-key",
-            likedGames = listOf(sampleLiked()),
-            candidates = listOf(sampleDeal())
+            likedGames = sampleRatedGames(),
+            candidates = listOf(sampleDeal()),
+            modelId = GeminiModels.HYDROGEN
         )
-        assertTrue(emptyOnError.isEmpty())
+        assertTrue(errOutcome.isError)
+        assertTrue(errOutcome.scores.isEmpty())
+        assertTrue(errOutcome.statusSummary.contains("HTTP 401"))
+        assertTrue(errOutcome.statusSummary.contains("API key not valid."))
+
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody("""{"candidates":[{"content":{"parts":[{"text":"OK"}]}}]}""")
+        )
+        val ping = reranker.testKey(apiKey = "AIzaTestKey", modelId = GeminiModels.HYDROGEN)
+        assertTrue(ping.isSuccess)
+        assertTrue(ping.getOrThrow().contains("gemini-4-hydrogen"))
     }
 }

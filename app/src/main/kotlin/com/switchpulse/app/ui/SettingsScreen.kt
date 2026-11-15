@@ -62,7 +62,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.switchpulse.app.BuildConfig
-import com.switchpulse.app.data.model.LikedGame
+import com.switchpulse.app.data.remote.GeminiModels
 import com.switchpulse.app.ui.theme.EshopCrimson
 import com.switchpulse.app.update.ReleaseInfo
 import com.switchpulse.app.widget.EditorialBentoWidgetReceiver
@@ -86,17 +86,17 @@ fun SettingsScreen(
     onInstallDownloaded: (ReleaseInfo, File) -> Unit,
     onWidgetPinFeedback: (String) -> Unit,
     onRecommendationWeightChange: (Int) -> Unit,
-    onSearchProfileGames: (String) -> Unit,
-    onAddLikedGame: (LikedGame) -> Unit,
-    onRemoveLikedGame: (String) -> Unit,
     onSaveGeminiApiKey: (String) -> Unit,
+    onSelectGeminiModel: (String) -> Unit,
+    onTestGeminiConnection: () -> Unit,
+    onRerankWithGeminiNow: () -> Unit,
+    onOpenLibraryTab: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var repoInput by remember(state.settings.githubRepo) {
         mutableStateOf(state.settings.githubRepo)
     }
-    var tasteSearchInput by remember { mutableStateOf("") }
     var geminiKeyInput by remember(state.settings.geminiApiKey) {
         mutableStateOf(state.settings.geminiApiKey)
     }
@@ -171,22 +171,32 @@ fun SettingsScreen(
             }
         }
 
-        // 2b. Taste profile & recommendation engine
+        // 2b. Taste engine weight & Gemini AI configuration
         item {
-            SettingsCard(title = "Raccomandazioni & I tuoi gusti (${state.settings.likedGames.size})") {
+            val ratedCount = state.settings.likedGames.count { it.isPositiveRating || it.isNegativeRating }
+            val ownedCount = state.settings.likedGames.count { it.isOwned }
+
+            SettingsCard(title = "Motore AI & Raccomandazioni") {
                 Text(
-                    text = "Tocca il cuore sui giochi in classifica oppure cerca qui i tuoi titoli Switch preferiti per personalizzare il ranking tramite tag Steam, generi e sviluppatori.",
+                    text = "I tuoi voti 1–5★ e i giochi posseduti si gestiscono nella tab Libreria ($ratedCount valutati · $ownedCount posseduti).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                TextButton(
+                    onClick = onOpenLibraryTab,
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp)
+                ) {
+                    Text("Vai alla Libreria →", color = EshopCrimson)
+                }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Influenza sui consigli", style = MaterialTheme.typography.bodyMedium)
+                    Text("Influenza dei voti sulla classifica", style = MaterialTheme.typography.bodyMedium)
                     Text(
                         "${state.settings.recommendationWeight}%",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
@@ -199,159 +209,44 @@ fun SettingsScreen(
                     colors = SliderDefaults.colors(thumbColor = EshopCrimson, activeTrackColor = EshopCrimson)
                 )
 
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = tasteSearchInput,
-                        onValueChange = { tasteSearchInput = it },
-                        label = { Text("Aggiungi un gioco preferito (es. Hades)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilledTonalButton(
-                        onClick = { onSearchProfileGames(tasteSearchInput) },
-                        enabled = !state.isSearchingProfile && tasteSearchInput.trim().length >= 2
-                    ) {
-                        if (state.isSearchingProfile) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Rounded.Search, contentDescription = "Cerca", modifier = Modifier.size(18.dp))
-                        }
-                    }
-                }
-
-                if (state.profileSearchResults.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    val savedIds = remember(state.settings.likedGames) {
-                        state.settings.likedGames.map { it.id }.toSet()
-                    }
-                    state.profileSearchResults.forEachIndexed { idx, candidate ->
-                        val alreadyAdded = candidate.id in savedIds
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                                Text(
-                                    text = candidate.title,
-                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                val detail = listOfNotNull(
-                                    candidate.publisher.takeIf { it.isNotBlank() },
-                                    candidate.steamTagNames.take(3).joinToString(" · ").takeIf { it.isNotBlank() }
-                                        ?: candidate.gameCategories.take(2).joinToString(" · ").takeIf { it.isNotBlank() }
-                                ).joinToString(" · ")
-                                if (detail.isNotBlank()) {
-                                    Text(
-                                        text = detail,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                            FilledTonalButton(
-                                onClick = { onAddLikedGame(candidate) },
-                                enabled = !alreadyAdded,
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (alreadyAdded) Icons.Rounded.CheckCircle else Icons.Rounded.Add,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(if (alreadyAdded) "Salvato" else "Aggiungi")
-                            }
-                        }
-                        if (idx < state.profileSearchResults.lastIndex) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        }
-                    }
-                }
-
-                if (state.settings.likedGames.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "Giochi nel tuo profilo gusti",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    state.settings.likedGames.forEachIndexed { idx, liked ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Favorite,
-                                contentDescription = null,
-                                tint = EshopCrimson,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                                Text(
-                                    text = liked.title,
-                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                val subtitle = liked.steamTagNames.take(3).joinToString(" · ")
-                                    .ifBlank { liked.gameCategories.take(2).joinToString(" · ") }
-                                if (subtitle.isNotBlank()) {
-                                    Text(
-                                        text = subtitle,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                            IconButton(
-                                onClick = { onRemoveLikedGame(liked.id) },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Close,
-                                    contentDescription = "Rimuovi dai gusti",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                        if (idx < state.settings.likedGames.lastIndex) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        }
-                    }
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
 
                 Text(
-                    text = "Turbo Gemini AI (opzionale, BYOK)",
+                    text = "Modello Gemini (BYOK)",
                     style = MaterialTheme.typography.labelLarge
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Facoltativo: aggiungi una chiave gratuita Google AI Studio per affinare ulteriormente il ranking semantico con Gemini 2.5 Flash-Lite. Senza chiave l'app usa comunque il motore locale Steam + Nintendo.",
+                    text = "Consigliato: gemini-4-hydrogen (veloce, thinking low + Google Search per Metacritic e HowLongToBeat nella scheda gioco).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(8.dp))
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    GeminiModels.OPTIONS.forEach { (id, label) ->
+                        val selected = state.settings.geminiModel == id
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (selected) EshopCrimson
+                                    else MaterialTheme.colorScheme.surfaceContainerHigh
+                                )
+                                .clickable { onSelectGeminiModel(id) }
+                                .padding(horizontal = 12.dp, vertical = 9.dp)
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
                 OutlinedTextField(
                     value = geminiKeyInput,
                     onValueChange = { geminiKeyInput = it },
@@ -368,7 +263,8 @@ fun SettingsScreen(
                     },
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -379,7 +275,34 @@ fun SettingsScreen(
                     ) {
                         Text("Salva chiave")
                     }
-                    if (state.settings.geminiApiKey.isNotBlank()) {
+                    FilledTonalButton(
+                        onClick = onTestGeminiConnection,
+                        enabled = state.settings.geminiApiKey.isNotBlank() && !state.isTestingGemini,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (state.isTestingGemini) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("Testa chiave")
+                        }
+                    }
+                }
+
+                if (state.settings.geminiApiKey.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = onRerankWithGeminiNow,
+                            enabled = !state.isRefreshing,
+                            colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Ricalcola AI ora")
+                        }
                         TextButton(
                             onClick = {
                                 geminiKeyInput = ""
@@ -388,6 +311,23 @@ fun SettingsScreen(
                         ) {
                             Text("Rimuovi", color = EshopCrimson)
                         }
+                    }
+                }
+
+                val diagnosticText = state.geminiTestResult?.takeIf { it.isNotBlank() }
+                    ?: state.settings.geminiStatusSummary.takeIf { it.isNotBlank() }
+                if (diagnosticText != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = diagnosticText,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(10.dp)
+                        )
                     }
                 }
             }
