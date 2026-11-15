@@ -8,17 +8,23 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CollectionsBookmark
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -38,12 +44,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.switchpulse.app.data.model.DealTitleNormalizer
@@ -91,6 +100,7 @@ private fun SwitchPulseRoot(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var selectedTab by rememberSaveable { mutableIntStateOf(initialTab) }
+    var showAddGameSheet by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -119,31 +129,61 @@ private fun SwitchPulseRoot(
                                 1 -> "La tua Libreria"
                                 else -> "Filtri & Aggiornamenti"
                             },
-                            style = MaterialTheme.typography.titleLarge
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                         )
-                        Text(
-                            text = "Nintendo eShop Italia · Switch & Switch 2",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        if (selectedTab != 1) {
+                            Text(
+                                text = "Nintendo eShop Italia · Switch & Switch 2",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 },
                 actions = {
-                    if (selectedTab == 0) {
-                        IconButton(
-                            onClick = { viewModel.refreshDeals() },
-                            enabled = !state.isRefreshing
-                        ) {
-                            if (state.isRefreshing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                    color = EshopCrimson
-                                )
-                            } else {
+                    when (selectedTab) {
+                        0 -> {
+                            IconButton(
+                                onClick = { viewModel.refreshDeals() },
+                                enabled = !state.isRefreshing
+                            ) {
+                                if (state.isRefreshing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp,
+                                        color = EshopCrimson
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Refresh,
+                                        contentDescription = "Aggiorna offerte"
+                                    )
+                                }
+                            }
+                        }
+
+                        1 -> {
+                            Button(
+                                onClick = { showAddGameSheet = true },
+                                shape = RoundedCornerShape(999.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = EshopCrimson,
+                                    contentColor = Color.White
+                                ),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                modifier = Modifier
+                                    .padding(end = 12.dp)
+                                    .height(38.dp)
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.Refresh,
-                                    contentDescription = "Aggiorna offerte"
+                                    imageVector = Icons.Rounded.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = "Aggiungi",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                                 )
                             }
                         }
@@ -203,6 +243,12 @@ private fun SwitchPulseRoot(
 
             1 -> LibraryScreen(
                 state = state,
+                showAddGameSheet = showAddGameSheet,
+                onOpenAddGameSheet = { showAddGameSheet = true },
+                onDismissAddGameSheet = {
+                    showAddGameSheet = false
+                    viewModel.clearProfileSearchResults()
+                },
                 onSearchGames = viewModel::searchProfileGames,
                 onClearSearchResults = viewModel::clearProfileSearchResults,
                 onSetGameRating = viewModel::setGameRating,

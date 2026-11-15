@@ -246,4 +246,42 @@ class RecommendationEngineTest {
         assertEquals("action", top.first())
         assertFalse("racing" in top)
     }
+
+    @Test
+    fun `computeTasteProfile aggregates rated genre bars ignoring generic meta tags and unrated backlog`() {
+        val library = listOf(
+            LikedGame(
+                id = "hades",
+                title = "Hades",
+                steamTagNames = listOf("Singleplayer", "Roguelite", "Azione"),
+                rating = 5
+            ),
+            LikedGame(
+                id = "dead-cells",
+                title = "Dead Cells",
+                steamTagNames = listOf("Roguelite", "Metroidvania", "Controller"),
+                rating = 5
+            ),
+            LikedGame(
+                id = "hollow-knight",
+                title = "Hollow Knight",
+                steamTagNames = listOf("Metroidvania", "Indie"),
+                rating = 4
+            ),
+            LikedGame(
+                id = "unrated-backlog",
+                title = "Zelda Backlog",
+                steamTagNames = listOf("Avventura"),
+                rating = null,
+                isOwned = true
+            )
+        )
+
+        val bars = RecommendationEngine.computeTasteProfile(library, limit = 3)
+        assertTrue(bars.isNotEmpty())
+        assertEquals("Roguelite", bars.first().label)
+        assertEquals(100, bars.first().percent)
+        assertTrue(bars.first().isPositive)
+        assertFalse(bars.any { it.label == "Singleplayer" || it.label == "Controller" || it.label == "Avventura" })
+    }
 }

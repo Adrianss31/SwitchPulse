@@ -22,12 +22,36 @@ data class DealAffinityBreakdown(
     val aiReason: String?
 )
 
+data class TasteGenreBar(
+    val label: String,
+    val avgStars: Double,
+    val percent: Int,
+    val isPositive: Boolean,
+    val ratedCount: Int
+)
+
 /**
  * Computes on-device taste affinity & repulsion scores using weighted Cosine Similarity over Steam
  * community micro-tags, developers, Nintendo categories, publishers, and extracted subgenres,
  * calibrated from 1-5★ ratings and optionally blended with Gemini 4 Hydrogen semantic reranking.
  */
 object RecommendationEngine {
+
+    private val GENERIC_META_TAGS = setOf(
+        "singleplayer",
+        "giocatore singolo",
+        "controller",
+        "full controller support",
+        "supporto controller completo",
+        "steam achievements",
+        "obiettivi di steam",
+        "steam cloud",
+        "family sharing",
+        "condivisione familiare",
+        "remote play",
+        "2d",
+        "3d"
+    )
 
     private val SUBGENRE_PATTERNS: List<Pair<String, Regex>> = listOf(
         "Roguelite" to Regex("\\brogueli(?:te|ke)|stile rogue\\b", RegexOption.IGNORE_CASE),
@@ -253,6 +277,77 @@ object RecommendationEngine {
             .sortedByDescending { it.value }
             .take(limit)
             .map { it.key }
+    }
+
+    /**
+     * Computes top genre/tag taste bars from 1–5★ rated games in the Library so the UI shows
+     * which genres drive recommendations most strongly.
+     */
+    fun computeTasteProfile(likedGames: List<LikedGame>, limit: Int = 3): List<TasteGenreBar> {
+        val rated = likedGames.filter { it.rating != null }
+        if (rated.isEmpty()) return emptyList()
+
+        data class Accumulator(var sumStars: Int = 0, var count: Int = 0)
+        val byLabel = LinkedHashMap<String, Accumulator>()
+
+        rated.forEach { game ->
+            val rating = game.rating ?: return@forEach
+            val labelsForGame = linkedSetOf<String>()
+
+            // Specific subgenre keywords first, then curated Steam tags, then Nintendo categories
+            val combinedText = "${game.title} ${game.excerpt.orEmpty()}"
+            SUBGENRE_PATTERNS.forEach { (label, regex) ->
+                if (regex.containsMatchIn(combinedText)) {
+                    labelsForGame.add(label)
+                }
+            }
+
+            game.steamTagNames
+                .map { it.trim() }
+                .filter { it.isNotBlank() && it.lowercase() !in GENERIC_META_TAGS }
+                .take(4)
+                .forEach { tag ->
+                    val existingLower = labelsForGame.map { it.lowercase() }
+                    if (tag.lowercase() !in existingLower) {
+                        labelsForGame.add(tag)
+                    }
+                }
+
+            if (labelsForGame.isEmpty()) {
+                game.gameCategories
+                    .mapNotNull { raw ->
+                        val clean = raw.trim().lowercase()
+                        CATEGORY_LABELS[clean] ?: clean.takeIf { it.isNotBlank() }?.replaceFirstChar { it.uppercase() }
+                    }
+                    .take(2)
+                    .forEach { labelsForGame.add(it) }
+            }
+
+            labelsForGame.forEach { label ->
+                val acc = byLabel.getOrPut(label) { Accumulator() }
+                acc.sumStars += rating
+                acc.count += 1
+            }
+        }
+
+        return byLabel.entries
+            .map { (label, acc) ->
+                val avg = acc.sumStars.toDouble() / acc.count.toDouble()
+                val pct = ((avg / 5.0) * 100.0).roundToInt().coerceIn(20, 100)
+                TasteGenreBar(
+                    label = label,
+                    avgStars = avg,
+                    percent = pct,
+                    isPositive = avg >= 3.5,
+                    ratedCount = acc.count
+                )
+            }
+            .sortedWith(
+                compareByDescending<TasteGenreBar> { it.isPositive }
+                    .thenByDescending { it.ratedCount * it.avgStars }
+                    .thenByDescending { it.avgStars }
+            )
+            .take(limit)
     }
 
     internal fun starWeight(rating: Int?): Double = when (rating) {
