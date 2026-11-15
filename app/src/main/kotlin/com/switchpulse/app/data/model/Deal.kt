@@ -77,6 +77,7 @@ data class Deal(
     val excerpt: String? = null,
     val aiAffinityScore: Double? = null,
     val aiReason: String? = null,
+    val aiDetailedReason: String? = null,
     val personalScore: Double = 0.0,
     val matchReason: String? = null,
     val matchSource: DealMatchSource = DealMatchSource.NONE,

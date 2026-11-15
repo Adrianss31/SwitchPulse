@@ -206,7 +206,7 @@ class PreferencesStore(private val context: Context) {
             title = existing.title.ifBlank { incoming.title },
             publisher = existing.publisher.ifBlank { incoming.publisher },
             developer = existing.developer ?: incoming.developer,
-            imageUrl = existing.imageUrl ?: incoming.imageUrl,
+            imageUrl = existing.imageUrl?.takeIf { it.isNotBlank() } ?: incoming.imageUrl?.takeIf { it.isNotBlank() },
             eshopUrl = existing.eshopUrl ?: incoming.eshopUrl,
             gameCategories = existing.gameCategories.ifEmpty { incoming.gameCategories },
             steamTagIds = existing.steamTagIds.ifEmpty { incoming.steamTagIds },

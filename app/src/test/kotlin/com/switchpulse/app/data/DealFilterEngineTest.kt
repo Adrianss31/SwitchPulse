@@ -103,4 +103,27 @@ class DealFilterEngineTest {
         val sw2 = DealFilterEngine.filterTopTen(raw, settings, PlatformFilter.SWITCH_2)
         assertEquals(listOf("102"), sw2.map { it.id })
     }
+
+    @Test
+    fun `selectCandidatesForAi excludes filtered-out deals so AI evaluates eligible Top 30 titles`() {
+        val lowDiscount = sampleDeal("low-disc", Platform.SWITCH_1, 59.99, 53.99, 10, 1, hotScore = 99.0)
+        val cheapBase = sampleDeal("cheap", Platform.SWITCH_1, 4.99, 0.99, 80, 2, hotScore = 95.0)
+        val blacklisted = sampleDeal("bl", Platform.SWITCH_1, 39.99, 19.99, 50, 3, hotScore = 94.0)
+        val eligible1 = sampleDeal("ok-1", Platform.SWITCH_1, 39.99, 19.99, 50, 4, title = "Despot's Game", hotScore = 70.0)
+        val eligible2 = sampleDeal("ok-2", Platform.SWITCH_2, 49.99, 24.99, 50, 5, title = "Hades II", hotScore = 88.0)
+
+        val settings = FilterSettings(
+            minDiscountPercent = 30,
+            minRegularPriceEur = 10f,
+            blacklistIds = setOf("bl")
+        )
+
+        val candidates = DealFilterEngine.selectCandidatesForAi(
+            rawDeals = listOf(lowDiscount, cheapBase, blacklisted, eligible1, eligible2),
+            settings = settings,
+            limit = 40
+        )
+
+        assertEquals(listOf("ok-2", "ok-1"), candidates.map { it.id })
+    }
 }

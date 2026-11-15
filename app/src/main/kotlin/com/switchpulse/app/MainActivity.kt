@@ -275,7 +275,7 @@ private fun SwitchPulseRoot(
                 onRecommendationWeightChange = viewModel::setRecommendationWeight,
                 onSaveGeminiApiKey = viewModel::setGeminiApiKey,
                 onSelectGeminiModel = viewModel::setGeminiModel,
-                onTestGeminiConnection = viewModel::testGeminiConnection,
+                onTestGeminiConnection = { pending -> viewModel.testGeminiConnection(pending) },
                 onRerankWithGeminiNow = viewModel::rerankWithGeminiNow,
                 onOpenLibraryTab = { selectedTab = 1 },
                 modifier = Modifier.padding(innerPadding)

@@ -39,7 +39,8 @@ object GeminiModels {
 
 data class SemanticRerankEntry(
     val score: Double,
-    val reason: String?
+    val reason: String?,
+    val detailedReason: String? = null
 )
 
 data class GeminiRerankOutcome(
@@ -76,8 +77,7 @@ class GeminiReranker(
             .sortedBy { it.id }
             .joinToString("|") { "${it.id}:${it.rating}" }
         val candSig = candidates
-            .sortedByDescending { it.hotScore }
-            .take(55)
+            .take(MAX_CANDIDATES)
             .joinToString(",") { it.id }
         val raw = "$modelId#$ratedSig#$candSig"
         val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray())
@@ -116,9 +116,7 @@ class GeminiReranker(
             )
         }
 
-        val topCandidates = candidates
-            .sortedByDescending { it.hotScore }
-            .take(55)
+        val topCandidates = candidates.take(MAX_CANDIDATES)
 
         val prompt = buildPrompt(rated.take(20), topCandidates)
         val requestBodyObj = GeminiGenerateRequest(
@@ -127,7 +125,8 @@ class GeminiReranker(
             ),
             generationConfig = GeminiGenerationConfig(
                 responseMimeType = "application/json",
-                temperature = 0.2,
+                temperature = 0.25,
+                maxOutputTokens = 8192,
                 thinkingConfig = GeminiModels.thinkingConfigFor(effectiveModel)
             )
         )
@@ -244,9 +243,18 @@ class GeminiReranker(
         return runCatching {
             val entries = json.decodeFromString<List<GeminiScoreItem>>(arrayCandidate)
             entries.associate { item ->
+                val shortBadge = (item.badge ?: item.reason)
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.take(64)
+                val detailed = (item.analysis ?: item.reason)
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.take(420)
                 item.id to SemanticRerankEntry(
                     score = item.score.coerceIn(0.0, 100.0),
-                    reason = item.reason?.trim()?.takeIf { it.isNotBlank() }?.take(56)
+                    reason = shortBadge,
+                    detailedReason = detailed
                 )
             }
         }.getOrDefault(emptyMap())
@@ -256,7 +264,7 @@ class GeminiReranker(
         val decoded = runCatching {
             json.decodeFromString<GeminiErrorEnvelope>(rawBody).error?.message
         }.getOrNull()
-        return decoded?.take(120).orEmpty()
+        return decoded?.take(300).orEmpty()
     }
 
     private fun extractJsonArray(text: String): String? {
@@ -278,19 +286,30 @@ class GeminiReranker(
             "- [${game.rating}★] ${game.title} [${tags.ifBlank { game.publisher }}]"
         }
         val candidatesText = candidates.joinToString("\n") { deal ->
-            val tags = (deal.steamTagNames.take(4) + deal.gameCategories).distinct().joinToString(", ")
-            val blurb = deal.excerpt?.take(90)?.replace("\n", " ").orEmpty()
-            "- id=${deal.id} | ${deal.title} (${deal.publisher}) | [$tags] | -${deal.discountPercent}% | $blurb"
+            val tags = (deal.steamTagNames.take(5) + deal.gameCategories).distinct().joinToString(", ")
+            val acclaim = if (deal.steamReviewCount > 0 && deal.steamPositivePercent != null) {
+                " | Steam ${deal.steamPositivePercent}% pos (${deal.steamReviewCount} rec)"
+            } else {
+                ""
+            }
+            val studio = listOfNotNull(
+                deal.developer?.takeIf { it.isNotBlank() },
+                deal.publisher.takeIf { it.isNotBlank() }
+            ).distinct().joinToString(" / ")
+            val blurb = deal.excerpt?.take(120)?.replace("\n", " ").orEmpty()
+            "- id=${deal.id} | ${deal.title} ($studio) | [$tags]$acclaim | -${deal.discountPercent}% | $blurb"
         }
 
         return """
-            Sei un curatore esperto di videogiochi Nintendo Switch. Valuta quanto ogni gioco in sconto è affine ai gusti dell'utente confrontando meccaniche, ritmo, struttura e atmosfera.
+            Sei un critico e curatore esperto di videogiochi Nintendo Switch. Valuta OGNI SINGOLO gioco in `OFFERTE CANDIDATE` confrontando gameplay loop, ritmo, profondità tattica, accessibilità e atmosfera rispetto ai gusti dell'utente.
             Scala score 0..100:
-            - 60..100: consigliato/affine ai giochi 4-5★
-            - 40..59: neutro (puoi ometterlo)
-            - 0..38: sconsigliato perché molto simile ai giochi 1-2★ o distante dai gusti
-            Restituisci SOLO un array JSON valido di oggetti (omitti i neutri 40..59):
-            [{"id":"<id>","score":<0..100>,"reason":"<max 7 parole in italiano che citano il titolo/genere>"}]
+            - 65..100: molto affine ai titoli 4-5★
+            - 40..64: neutro, misto o interessante ma con compromessi
+            - 0..39: distante dai gusti o troppo vicino ai titoli 1-2★ sconsigliati
+
+            REGOLA FONDAMENTALE: restituisci un oggetto JSON per TUTTI e ${candidates.size} i titoli elencati (inclusi quelli neutri 40..64, NON omettere alcun `id`).
+            Restituisci SOLO un array JSON valido con questo schema esatto:
+            [{"id":"<id>","score":<0..100>,"badge":"<3-6 parole sintetiche per lista>","analysis":"<2 frasi specifiche in italiano (25-45 parole): spiega le meccaniche reali del titolo, in cosa ricorda o differisce dai giochi 4-5★ o 1-2★ dell'utente e a chi/perché conviene su Switch>"}]
 
             GIOCHI APPREZZATI (4-5★):
             $posText
@@ -298,17 +317,18 @@ class GeminiReranker(
             GIOCHI SCONSIGLIATI / NON PIACIUTI (1-2★):
             $negText
 
-            OFFERTE CANDIDATE:
+            OFFERTE CANDIDATE (${candidates.size} titoli):
             $candidatesText
         """.trimIndent()
     }
 
     companion object {
+        const val MAX_CANDIDATES = 40
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(24, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(45, TimeUnit.SECONDS)
             .build()
     }
 }
@@ -367,6 +387,8 @@ internal data class GeminiResponseContent(
 internal data class GeminiScoreItem(
     val id: String,
     val score: Double = 0.0,
+    val badge: String? = null,
+    val analysis: String? = null,
     val reason: String? = null
 )
 

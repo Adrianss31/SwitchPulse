@@ -302,10 +302,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun testGeminiConnection() {
+    fun testGeminiConnection(pendingKey: String? = null) {
         if (transientState.value.isTestingGemini) return
         viewModelScope.launch {
             transientState.update { it.copy(isTestingGemini = true, geminiTestResult = null) }
+            val trimmedPending = pendingKey?.trim()
+            if (!trimmedPending.isNullOrBlank()) {
+                val currentSaved = repository.preferences.getSettings().geminiApiKey.trim()
+                if (trimmedPending != currentSaved) {
+                    repository.preferences.updateGeminiApiKey(trimmedPending)
+                }
+            }
             val resultText = repository.testGeminiKey().fold(
                 onSuccess = { ok -> ok },
                 onFailure = { err -> "⚠️ ${err.message ?: "Errore connessione Gemini"}" }

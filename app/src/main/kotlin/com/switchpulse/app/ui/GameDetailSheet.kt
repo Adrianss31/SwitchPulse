@@ -266,14 +266,27 @@ fun GameDetailSheet(
                         style = MaterialTheme.typography.labelLarge
                     )
 
-                    if (breakdown.aiScore != null || !breakdown.aiReason.isNullOrBlank()) {
+                    val aiDisplayText = breakdown.aiDetailedReason?.takeIf { it.isNotBlank() }
+                        ?: breakdown.aiReason?.takeIf { it.isNotBlank() }
+                    if (breakdown.aiScore != null || aiDisplayText != null) {
+                        val scoreVal = breakdown.aiScore
+                        val badgeBg = when {
+                            scoreVal != null && scoreVal >= 65 -> EshopCrimson
+                            scoreVal != null && scoreVal < 40 -> Color(0xFF92400E)
+                            else -> MaterialTheme.colorScheme.surfaceContainerHighest
+                        }
+                        val badgeFg = if (scoreVal != null && (scoreVal >= 65 || scoreVal < 40)) {
+                            Color.White
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = EshopCrimson
+                                color = badgeBg
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -283,21 +296,22 @@ fun GameDetailSheet(
                                     Icon(
                                         Icons.Rounded.AutoAwesome,
                                         contentDescription = null,
-                                        tint = Color.White,
+                                        tint = badgeFg,
                                         modifier = Modifier.size(13.dp)
                                     )
                                     Text(
-                                        text = "${settings.geminiModel} · ${breakdown.aiScore ?: "--"}/100",
-                                        color = Color.White,
+                                        text = "${settings.geminiModel} · ${scoreVal ?: "--"}/100",
+                                        color = badgeFg,
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                                     )
                                 }
                             }
                         }
-                        if (!breakdown.aiReason.isNullOrBlank()) {
+                        if (aiDisplayText != null) {
                             Text(
-                                text = breakdown.aiReason,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                text = aiDisplayText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     } else {

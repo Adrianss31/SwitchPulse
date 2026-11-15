@@ -132,4 +132,45 @@ class GeminiRerankerTest {
         assertTrue(ping.isSuccess)
         assertTrue(ping.getOrThrow().contains("gemini-4-hydrogen"))
     }
+
+    @Test
+    fun `rerank requests all candidates including neutral ones and parses full badge plus multi-sentence analysis`() = runBlocking {
+        val longAnalysis = "Combina combattimenti tattici automatici in tempo reale con una progressione roguelike ad alto ritmo. Rispetto a Ori privilegia la gestione della squadra e build rapide invece dell'esplorazione platform."
+        val body = """
+            {
+              "candidates": [
+                {
+                  "content": {
+                    "parts": [
+                      {
+                        "text": "[{\"id\":\"301\",\"score\":72,\"badge\":\"Roguelike tattico ad alto ritmo\",\"analysis\":\"$longAnalysis\"}]"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(body))
+
+        val reranker = GeminiReranker(
+            httpClient = OkHttpClient(),
+            endpointBaseUrl = server.url("/v1beta/models/gemini-4-hydrogen:generateContent").toString()
+        )
+        val outcome = reranker.rerank(
+            apiKey = "AIzaTestKey",
+            likedGames = sampleRatedGames(),
+            candidates = listOf(sampleDeal()),
+            modelId = GeminiModels.HYDROGEN
+        )
+
+        val requestJson = server.takeRequest().body.readUtf8()
+        assertFalse(requestJson.contains("omitti i neutri"))
+        assertTrue(requestJson.contains("NON omettere alcun"))
+
+        val entry = outcome.scores.getValue("301")
+        assertEquals(72.0, entry.score, 0.001)
+        assertEquals("Roguelike tattico ad alto ritmo", entry.reason)
+        assertEquals(longAnalysis, entry.detailedReason)
+    }
 }

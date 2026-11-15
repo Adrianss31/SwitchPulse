@@ -19,7 +19,8 @@ data class DealAffinityBreakdown(
     val closestLikedTitle: String?,
     val closestDislikedTitle: String?,
     val aiScore: Int?,
-    val aiReason: String?
+    val aiReason: String?,
+    val aiDetailedReason: String? = null
 )
 
 data class TasteGenreBar(
@@ -252,7 +253,8 @@ object RecommendationEngine {
             closestLikedTitle = posAnchor?.first?.title,
             closestDislikedTitle = negAnchor?.first?.title,
             aiScore = deal.aiAffinityScore?.roundToInt(),
-            aiReason = deal.aiReason
+            aiReason = deal.aiReason,
+            aiDetailedReason = deal.aiDetailedReason
         )
     }
 

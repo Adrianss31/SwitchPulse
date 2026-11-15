@@ -62,6 +62,45 @@ object DealFilterEngine {
             .toList()
     }
 
+    /**
+     * Returns eligible, deduplicated deal candidates matching the user's current filters so Gemini
+     * evaluates the exact titles visible in the Top 30 feed (plus top reserves) instead of spending
+     * quota on filtered-out, owned, or duplicate deals.
+     */
+    fun selectCandidatesForAi(
+        rawDeals: List<Deal>,
+        settings: FilterSettings,
+        limit: Int = 40
+    ): List<Deal> {
+        val ownedGames = settings.likedGames.filter { it.isOwned }
+        val ownedIds = ownedGames.map { it.id }.toSet()
+        val ownedNormTitles = ownedGames.map { DealTitleNormalizer.normalize(it.title) }.toSet()
+
+        return rawDeals
+            .asSequence()
+            .filter { deal -> deal.id !in settings.blacklistIds }
+            .filter { deal ->
+                deal.id !in ownedIds && DealTitleNormalizer.normalize(deal.title) !in ownedNormTitles
+            }
+            .filter { deal -> deal.discountPercent >= settings.minDiscountPercent }
+            .filter { deal -> deal.regularPriceEur >= settings.minRegularPriceEur }
+            .filter { deal ->
+                when (settings.appPlatformFilter) {
+                    PlatformFilter.ALL -> true
+                    PlatformFilter.SWITCH_2 -> deal.platform == Platform.SWITCH_2
+                    PlatformFilter.SWITCH_1 -> deal.platform == Platform.SWITCH_1
+                }
+            }
+            .sortedWith(
+                compareByDescending<Deal> { it.hotScore }
+                    .thenByDescending { it.platform == Platform.SWITCH_2 }
+                    .thenBy { it.popularityRank }
+            )
+            .distinctBy { deal -> DealTitleNormalizer.normalize(deal.title) }
+            .take(limit)
+            .toList()
+    }
+
     fun formatEur(amount: Double): String {
         return String.format(Locale.ITALY, "%.2f €", amount)
     }

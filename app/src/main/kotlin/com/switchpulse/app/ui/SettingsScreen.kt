@@ -88,7 +88,7 @@ fun SettingsScreen(
     onRecommendationWeightChange: (Int) -> Unit,
     onSaveGeminiApiKey: (String) -> Unit,
     onSelectGeminiModel: (String) -> Unit,
-    onTestGeminiConnection: () -> Unit,
+    onTestGeminiConnection: (String) -> Unit,
     onRerankWithGeminiNow: () -> Unit,
     onOpenLibraryTab: () -> Unit,
     modifier: Modifier = Modifier
@@ -276,8 +276,8 @@ fun SettingsScreen(
                         Text("Salva chiave")
                     }
                     FilledTonalButton(
-                        onClick = onTestGeminiConnection,
-                        enabled = state.settings.geminiApiKey.isNotBlank() && !state.isTestingGemini,
+                        onClick = { onTestGeminiConnection(geminiKeyInput) },
+                        enabled = (geminiKeyInput.isNotBlank() || state.settings.geminiApiKey.isNotBlank()) && !state.isTestingGemini,
                         modifier = Modifier.weight(1f)
                     ) {
                         if (state.isTestingGemini) {

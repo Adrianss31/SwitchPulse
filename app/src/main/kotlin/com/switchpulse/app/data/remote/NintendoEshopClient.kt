@@ -181,9 +181,7 @@ class NintendoEshopClient(
         val candidates = docs.mapNotNull { doc ->
             val id = doc.fsId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             val title = doc.title?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val imageUrl = doc.imageUrlH16x9S
-                ?: doc.wishlistEmailBanner640w
-                ?: doc.imageUrlSqS
+            val imageUrl = resolveDocImageUrl(doc)
             LikedGame(
                 id = id,
                 title = title,
@@ -405,9 +403,7 @@ class NintendoEshopClient(
         val platform = detectPlatform(doc.systemType)
         val eshopUrl = DealTitleNormalizer.resolveNintendoEshopUrl(doc.url)
 
-        val imageUrl = doc.imageUrlH16x9S
-            ?: doc.wishlistEmailBanner640w
-            ?: doc.imageUrlSqS
+        val imageUrl = resolveDocImageUrl(doc)
 
         val publisher = doc.publisher?.trim().orEmpty().ifBlank { "Nintendo eShop" }
         val releasedAtIso = doc.datesReleasedDts?.firstOrNull()
@@ -701,6 +697,14 @@ class NintendoEshopClient(
         return hours / 24.0
     }
 
+    private fun resolveDocImageUrl(doc: SolrDoc): String? = listOf(
+        doc.imageUrlH16x9S,
+        doc.wishlistEmailBanner640w,
+        doc.imageUrlH2x1S,
+        doc.imageUrlSqS,
+        doc.imageUrl
+    ).firstOrNull { !it.isNullOrBlank() }?.trim()
+
     private fun isNintendoFirstParty(publisher: String): Boolean =
         publisher.lowercase().contains("nintendo")
 
@@ -802,7 +806,9 @@ internal data class SolrDoc(
     @SerialName("system_type") val systemType: List<String>? = null,
     val url: String? = null,
     @SerialName("dates_released_dts") val datesReleasedDts: List<String>? = null,
+    @SerialName("image_url") val imageUrl: String? = null,
     @SerialName("image_url_h16x9_s") val imageUrlH16x9S: String? = null,
+    @SerialName("image_url_h2x1_s") val imageUrlH2x1S: String? = null,
     @SerialName("image_url_sq_s") val imageUrlSqS: String? = null,
     @SerialName("wishlist_email_banner640w_image_url_s") val wishlistEmailBanner640w: String? = null,
     @SerialName("nsuid_txt") val nsuidTxt: List<String>? = null,

@@ -48,7 +48,8 @@ class DealsRepository(
                 if (prev != null && prev.aiAffinityScore != null) {
                     deal.copy(
                         aiAffinityScore = prev.aiAffinityScore,
-                        aiReason = prev.aiReason
+                        aiReason = prev.aiReason,
+                        aiDetailedReason = prev.aiDetailedReason
                     )
                 } else {
                     deal
@@ -75,7 +76,9 @@ class DealsRepository(
             if (cached.isEmpty()) {
                 return@runCatching "Nessuna offerta in cache: ricarica prima il feed."
             }
-            val cleared = cached.map { it.copy(aiAffinityScore = null, aiReason = null) }
+            val cleared = cached.map {
+                it.copy(aiAffinityScore = null, aiReason = null, aiDetailedReason = null)
+            }
             val updated = applyGeminiIfEligible(
                 deals = cleared,
                 settings = settings,
@@ -107,15 +110,21 @@ class DealsRepository(
             if (msg.isNotBlank() || settings.geminiStatusSummary.isNotBlank()) {
                 preferences.saveGeminiRunState(msg, "")
             }
-            return deals.map { it.copy(aiAffinityScore = null, aiReason = null) }
+            return deals.map {
+                it.copy(aiAffinityScore = null, aiReason = null, aiDetailedReason = null)
+            }
         }
+
+        val aiTargets = DealFilterEngine
+            .selectCandidatesForAi(deals, settings, limit = GeminiReranker.MAX_CANDIDATES)
+            .ifEmpty { deals.sortedByDescending { it.hotScore }.take(GeminiReranker.MAX_CANDIDATES) }
 
         val signature = geminiReranker.computeSignature(
             modelId = settings.geminiModel,
             likedGames = settings.likedGames,
-            candidates = deals
+            candidates = aiTargets
         )
-        val hasCachedAi = deals.any { it.aiAffinityScore != null }
+        val hasCachedAi = aiTargets.any { it.aiAffinityScore != null }
         if (!force && signature == settings.geminiSignature && hasCachedAi) {
             val aiCount = deals.count { it.aiAffinityScore != null }
             preferences.saveGeminiRunState(
@@ -128,7 +137,7 @@ class DealsRepository(
         val outcome = geminiReranker.rerank(
             apiKey = settings.geminiApiKey,
             likedGames = settings.likedGames,
-            candidates = deals,
+            candidates = aiTargets,
             modelId = settings.geminiModel
         )
         preferences.saveGeminiRunState(
@@ -140,7 +149,7 @@ class DealsRepository(
             return if (outcome.isError) {
                 deals
             } else {
-                deals.map { it.copy(aiAffinityScore = null, aiReason = null) }
+                deals.map { it.copy(aiAffinityScore = null, aiReason = null, aiDetailedReason = null) }
             }
         }
 
@@ -148,7 +157,8 @@ class DealsRepository(
             val entry = outcome.scores[deal.id]
             deal.copy(
                 aiAffinityScore = entry?.score,
-                aiReason = entry?.reason
+                aiReason = entry?.reason,
+                aiDetailedReason = entry?.detailedReason
             )
         }
     }
