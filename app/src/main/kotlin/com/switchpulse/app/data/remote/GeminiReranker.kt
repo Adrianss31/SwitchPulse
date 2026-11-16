@@ -174,6 +174,18 @@ class GeminiReranker(
         deepSeekEndpointOverride = openAiEndpointOverride
     )
 
+    fun computeProfileSignature(
+        modelId: String,
+        likedGames: List<LikedGame>,
+        userTastePrompt: String = "",
+        provider: AiProvider = AiProvider.GEMINI
+    ): String = Companion.computeProfileSignature(
+        modelId = modelId,
+        likedGames = likedGames,
+        userTastePrompt = userTastePrompt,
+        provider = provider
+    )
+
     fun computeSignature(
         modelId: String,
         likedGames: List<LikedGame>,
@@ -442,6 +454,23 @@ class GeminiReranker(
     companion object {
         const val MAX_CANDIDATES = 40
         const val BATCH_SIZE = 20
+
+        fun computeProfileSignature(
+            modelId: String,
+            likedGames: List<LikedGame>,
+            userTastePrompt: String = "",
+            provider: AiProvider = AiProvider.GEMINI
+        ): String {
+            val librarySig = likedGames
+                .filter { it.rating != null || !it.userNote.isNullOrBlank() || it.isOwned }
+                .sortedBy { it.id }
+                .joinToString("|") {
+                    "${it.id}:${it.rating ?: 0}:${if (it.isOwned) 1 else 0}:${it.userNote.orEmpty().trim()}"
+                }
+            val raw = "${provider.id}:$modelId#$librarySig#${userTastePrompt.trim()}"
+            val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray())
+            return digest.joinToString("") { "%02x".format(it) }.take(24)
+        }
 
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)

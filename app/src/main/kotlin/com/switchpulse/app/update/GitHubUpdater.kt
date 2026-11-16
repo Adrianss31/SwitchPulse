@@ -15,6 +15,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 data class ReleaseInfo(
@@ -24,7 +25,8 @@ data class ReleaseInfo(
     val htmlUrl: String,
     val apkDownloadUrl: String,
     val apkFileName: String,
-    val apkSizeBytes: Long
+    val apkSizeBytes: Long,
+    val apkSha256: String? = null
 )
 
 sealed interface UpdateCheckResult {
@@ -92,7 +94,11 @@ class GitHubUpdater(
                     htmlUrl = dto.htmlUrl,
                     apkDownloadUrl = apkAsset.browserDownloadUrl,
                     apkFileName = apkAsset.name,
-                    apkSizeBytes = apkAsset.size
+                    apkSizeBytes = apkAsset.size,
+                    apkSha256 = apkAsset.digest
+                        ?.trim()
+                        ?.removePrefix("sha256:")
+                        ?.takeIf { it.length == 64 }
                 )
 
                 if (isRemoteNewer(dto.tagName, currentVersionName, currentVersionCode)) {
@@ -109,11 +115,22 @@ class GitHubUpdater(
     suspend fun downloadApk(
         context: Context,
         downloadUrl: String,
+        expectedSha256: String? = null,
         onProgress: (Float) -> Unit
     ): File = withContext(Dispatchers.IO) {
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
         val targetFile = File(updatesDir, "switchpulse-update.apk")
+        downloadToFile(downloadUrl, targetFile, expectedSha256, onProgress)
+    }
+
+    internal suspend fun downloadToFile(
+        downloadUrl: String,
+        targetFile: File,
+        expectedSha256: String? = null,
+        onProgress: (Float) -> Unit = {}
+    ): File = withContext(Dispatchers.IO) {
         if (targetFile.exists()) targetFile.delete()
+        targetFile.parentFile?.mkdirs()
 
         val request = Request.Builder()
             .url(downloadUrl)
@@ -121,6 +138,7 @@ class GitHubUpdater(
             .get()
             .build()
 
+        val shaDigest = MessageDigest.getInstance("SHA-256")
         httpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 throw IOException("Download APK HTTP ${response.code}")
@@ -136,6 +154,7 @@ class GitHubUpdater(
                         val read = input.read(buffer)
                         if (read == -1) break
                         output.write(buffer, 0, read)
+                        shaDigest.update(buffer, 0, read)
                         downloaded += read
                         if (total > 0) {
                             onProgress((downloaded.toFloat() / total).coerceIn(0f, 1f))
@@ -143,6 +162,14 @@ class GitHubUpdater(
                     }
                     output.flush()
                 }
+            }
+        }
+        val cleanExpected = expectedSha256?.trim()?.lowercase()?.takeIf { it.length == 64 }
+        if (cleanExpected != null) {
+            val actualHex = shaDigest.digest().joinToString("") { "%02x".format(it) }
+            if (actualHex != cleanExpected) {
+                targetFile.delete()
+                throw IOException("Verifica integrità SHA-256 dell'APK fallita")
             }
         }
         onProgress(1f)
@@ -221,5 +248,6 @@ internal data class GitHubReleaseDto(
 internal data class GitHubAssetDto(
     val name: String = "",
     val size: Long = 0L,
+    val digest: String? = null,
     @SerialName("browser_download_url") val browserDownloadUrl: String = ""
 )

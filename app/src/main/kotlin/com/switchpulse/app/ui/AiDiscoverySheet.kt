@@ -72,7 +72,8 @@ fun AiDiscoverySheet(
     onRefreshPicks: () -> Unit,
     onOpenEshop: (String) -> Unit,
     onToggleOwned: (LikedGame, Boolean) -> Unit,
-    onQuickRate: (LikedGame, Int) -> Unit
+    onQuickRate: (LikedGame, Int) -> Unit,
+    onDismissPick: (String) -> Unit = {}
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val libraryByNorm = remember(library) {
@@ -203,7 +204,8 @@ fun AiDiscoverySheet(
                             onQuickRate = {
                                 val entry = existing ?: pick.toLikedGame()
                                 onQuickRate(entry, 5)
-                            }
+                            },
+                            onDismissPick = { onDismissPick(pick.title) }
                         )
                     }
 
@@ -230,7 +232,8 @@ private fun DiscoveryPickCard(
     existingLibraryEntry: LikedGame?,
     onOpenEshop: () -> Unit,
     onToggleOwned: () -> Unit,
-    onQuickRate: () -> Unit
+    onQuickRate: () -> Unit,
+    onDismissPick: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
@@ -393,6 +396,18 @@ private fun DiscoveryPickCard(
                     Text(
                         text = existingLibraryEntry?.rating?.let { "${it}★" } ?: "+ 5★",
                         fontSize = 12.sp
+                    )
+                }
+
+                IconButton(
+                    onClick = onDismissPick,
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Scarta suggerimento",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }

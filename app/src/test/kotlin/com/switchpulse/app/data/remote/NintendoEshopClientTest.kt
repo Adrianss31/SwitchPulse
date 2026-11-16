@@ -1,5 +1,6 @@
 package com.switchpulse.app.data.remote
 
+import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.Platform
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
@@ -298,5 +299,117 @@ class NintendoEshopClientTest {
             "Expected FF7 Rebirth (${ff7.hotScore}) to outrank shovelware (${police.hotScore})",
             ff7.hotScore > police.hotScore
         )
+    }
+
+    @Test
+    fun `fetchPopularDeals drops stale deals whose live eShop discount disappeared and leaves empty publisher blank`() = runTest {
+        val searchJson = """
+            {
+              "response": {
+                "docs": [
+                  {
+                    "fs_id": "5001",
+                    "title": "Expired Sale Game",
+                    "publisher": "",
+                    "system_type": ["nintendoswitch_digitaldistribution"],
+                    "url": "/it-it/Giochi/EXPIRED-5001.html",
+                    "nsuid_txt": ["70010000500001"],
+                    "price_regular_f": 29.99,
+                    "price_discounted_f": 9.99,
+                    "price_discount_percentage_f": 67
+                  },
+                  {
+                    "fs_id": "5002",
+                    "title": "Ghost Trick: Phantom Detective",
+                    "publisher": "",
+                    "system_type": ["nintendoswitch_digitaldistribution"],
+                    "url": "/it-it/Giochi/GHOST-TRICK-5002.html",
+                    "nsuid_txt": ["70010000500002"],
+                    "price_regular_f": 29.99,
+                    "price_discounted_f": 14.99,
+                    "price_discount_percentage_f": 50
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+
+        val emptySw2 = """{"response":{"docs":[]}}"""
+        val priceApiJson = """
+            {
+              "personalized": false,
+              "country": "IT",
+              "prices": [
+                {
+                  "title_id": 70010000500001,
+                  "regular_price": { "raw_value": "29.99" },
+                  "discount_price": null
+                },
+                {
+                  "title_id": 70010000500002,
+                  "regular_price": { "raw_value": "29.99" },
+                  "discount_price": {
+                    "raw_value": "14.99",
+                    "start_datetime": "2026-11-10T00:00:00Z",
+                    "end_datetime": "2026-11-25T23:59:59Z"
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val url = request.requestUrl ?: return MockResponse().setResponseCode(404)
+                val path = url.encodedPath
+                val fq = url.queryParameter("fq").orEmpty()
+                return when {
+                    path.endsWith("/it/select") && fq.contains("dates_released_dts") ->
+                        MockResponse().setResponseCode(200).setBody(emptySw2)
+                    path.endsWith("/it/select") && fq == "type:GAME AND price_has_discount_b:true AND system_type:*nintendoswitch2*" ->
+                        MockResponse().setResponseCode(200).setBody(emptySw2)
+                    path.endsWith("/it/select") ->
+                        MockResponse().setResponseCode(200).setBody(searchJson)
+                    path.endsWith("/charts") ->
+                        MockResponse().setResponseCode(200).setBody("[]")
+                    path.endsWith("/v1/price") ->
+                        MockResponse().setResponseCode(200).setBody(priceApiJson)
+                    path.endsWith("/api/storesearch/") ->
+                        MockResponse().setResponseCode(200).setBody("""{"items":[{"id":1967430,"name":"Ghost Trick: Phantom Detective"}]}""")
+                    path.endsWith("/IStoreBrowseService/GetItems/v1/") ->
+                        MockResponse().setResponseCode(200).setBody("""{"response":{"store_items":[]}}""")
+                    path.endsWith("/IStoreService/GetTagList/v1/") ->
+                        MockResponse().setResponseCode(200).setBody("""{"response":{"tags":[]}}""")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val fixedClock = Clock.fixed(Instant.parse("2026-11-15T18:00:00Z"), ZoneOffset.UTC)
+        val client = NintendoEshopClient(
+            httpClient = OkHttpClient(),
+            searchBaseUrl = server.url("/it/select").toString(),
+            priceBaseUrl = server.url("/v1/price").toString(),
+            chartsUrl = server.url("/charts").toString(),
+            steamSearchUrl = server.url("/api/storesearch/").toString(),
+            steamBrowseItemsUrl = server.url("/IStoreBrowseService/GetItems/v1/").toString(),
+            steamTagListUrl = server.url("/IStoreService/GetTagList/v1/").toString(),
+            clock = fixedClock
+        )
+
+        val deals = client.fetchPopularDeals()
+        assertEquals(1, deals.size)
+        assertEquals("5002", deals.first().id)
+        assertEquals("", deals.first().publisher)
+        assertEquals("Nintendo eShop", deals.first().displayPublisher)
+        assertEquals(1967430, deals.first().steamAppId)
+
+        // Whole-word Steam supplement filtering preserves valid games containing "ost", "demo", "ost" substrings
+        assertTrue(DealTitleNormalizer.matchesSteamTitle("Ghost Trick: Phantom Detective", DealTitleNormalizer.normalize("Ghost Trick: Phantom Detective")))
+        assertTrue(DealTitleNormalizer.matchesSteamTitle("Demon's Tilt", DealTitleNormalizer.normalize("DEMON'S TILT")))
+        assertTrue(DealTitleNormalizer.matchesSteamTitle("Lost in Random", DealTitleNormalizer.normalize("Lost in Random")))
+        assertTrue(!DealTitleNormalizer.isSteamSupplementaryItem("Ghost Trick"))
+        assertTrue(DealTitleNormalizer.isSteamSupplementaryItem("Hollow Knight - Original Soundtrack"))
+        assertTrue(DealTitleNormalizer.isSteamSupplementaryItem("Hades OST"))
     }
 }

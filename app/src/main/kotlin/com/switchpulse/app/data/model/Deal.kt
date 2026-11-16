@@ -81,8 +81,12 @@ data class Deal(
     val personalScore: Double = 0.0,
     val matchReason: String? = null,
     val matchSource: DealMatchSource = DealMatchSource.NONE,
-    val matchSentiment: DealMatchSentiment = DealMatchSentiment.NONE
+    val matchSentiment: DealMatchSentiment = DealMatchSentiment.NONE,
+    val lowestSeenPriceEur: Double? = null,
+    val isHistoricalLow: Boolean = false
 ) {
+    val displayPublisher: String get() = publisher.ifBlank { "Nintendo eShop" }
+
     fun toLikedGame(
         rating: Int? = null,
         isOwned: Boolean = false
@@ -123,6 +127,7 @@ data class LikedGame(
     val rating: Int? = 5,
     val isOwned: Boolean = false,
     val userNote: String? = null,
+    val targetPriceEur: Double? = null,
     val addedAtMs: Long = 0L
 ) {
     val isPositiveRating: Boolean get() = (rating ?: 0) >= 4
@@ -130,13 +135,23 @@ data class LikedGame(
 }
 
 @Serializable
+enum class MetacriticOrigin {
+    NONE,
+    METACRITIC,
+    STEAM_PC,
+    AI_ESTIMATE
+}
+
+@Serializable
 data class GameExternalInsights(
     val dealId: String,
     val metacriticScore: Int? = null,
     val metacriticUrl: String? = null,
+    val metacriticOrigin: MetacriticOrigin = MetacriticOrigin.NONE,
     val hltbMainHours: String? = null,
     val hltbMainExtraHours: String? = null,
     val hltbCompletionistHours: String? = null,
+    val hltbIsEstimated: Boolean = false,
     val aiVerdict: String? = null,
     val summaryNote: String? = null,
     val sourceLabel: String = "",
@@ -153,6 +168,7 @@ object DealTitleNormalizer {
     private val SWITCH_EDITION = Regex("\\s*nintendo switch.*edition.*$", RegexOption.IGNORE_CASE)
     private val NON_ALNUM = Regex("[^a-z0-9 ]+")
     private val MULTI_SPACE = Regex("\\s+")
+    private val STEAM_EXCLUDED_WORDS = Regex("\\b(?:soundtrack|ost|artbook|demo)\\b", RegexOption.IGNORE_CASE)
 
     fun normalize(title: String): String {
         val cleaned = title.lowercase()
@@ -163,6 +179,18 @@ object DealTitleNormalizer {
             .replace(MULTI_SPACE, " ")
             .trim()
         return cleaned.ifEmpty { title.lowercase().trim() }
+    }
+
+    fun isSteamSupplementaryItem(rawName: String): Boolean =
+        STEAM_EXCLUDED_WORDS.containsMatchIn(rawName)
+
+    fun matchesSteamTitle(rawCandidateName: String, normalizedTarget: String): Boolean {
+        if (rawCandidateName.isBlank() || normalizedTarget.isBlank()) return false
+        if (isSteamSupplementaryItem(rawCandidateName)) return false
+        val candidateNorm = normalize(rawCandidateName)
+        return candidateNorm == normalizedTarget ||
+            (normalizedTarget.length >= 6 &&
+                (candidateNorm.startsWith("$normalizedTarget ") || normalizedTarget.startsWith("$candidateNorm ")))
     }
 
     fun resolveNintendoEshopUrl(rawUrl: String?): String {
@@ -255,12 +283,25 @@ data class GeminiModelInfo(
     val isFree: Boolean = false
 )
 
+@Serializable
+enum class BackgroundRerankPolicy(val label: String) {
+    WIFI_ONLY("Solo Wi-Fi"),
+    ALWAYS("Sempre"),
+    OFF("Mai");
+
+    companion object {
+        fun fromName(raw: String?): BackgroundRerankPolicy =
+            entries.firstOrNull { it.name == raw } ?: WIFI_ONLY
+    }
+}
+
 data class FilterSettings(
     val minDiscountPercent: Int = 30,
     val minRegularPriceEur: Float = 10f,
     val appPlatformFilter: PlatformFilter = PlatformFilter.ALL,
     val widgetPlatformFilter: PlatformFilter = PlatformFilter.ALL,
     val syncIntervalHours: Int = 12,
+    val backgroundRerankPolicy: BackgroundRerankPolicy = BackgroundRerankPolicy.WIFI_ONLY,
     val blacklistIds: Set<String> = emptySet(),
     val blacklistTitles: Map<String, String> = emptyMap(),
     val likedGames: List<LikedGame> = emptyList(),
@@ -282,6 +323,7 @@ data class FilterSettings(
     val userTastePrompt: String = "",
     val gamerSoulProfile: GamerSoulProfile? = null,
     val discoveryPicks: List<AiDiscoveryPick> = emptyList(),
+    val dismissedDiscoveryTitles: List<String> = emptyList(),
     val githubRepo: String = "",
     val autoCheckUpdates: Boolean = true,
     val lastSyncEpochMs: Long = 0L

@@ -1,12 +1,17 @@
 package com.switchpulse.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -70,10 +75,24 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
+    private var pendingIntentState by mutableStateOf<Intent?>(null)
+
+    private val requestNotificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        pendingIntentState = intent
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
         val openUpdatesInitially = intent?.getBooleanExtra(DealsSyncWorker.EXTRA_OPEN_UPDATES, false) == true
 
         setContent {
@@ -81,6 +100,8 @@ class MainActivity : ComponentActivity() {
                 SwitchPulseRoot(
                     viewModel = viewModel,
                     initialTab = if (openUpdatesInitially) 2 else 0,
+                    pendingIntent = pendingIntentState,
+                    onIntentConsumed = { pendingIntentState = null },
                     onOpenUrl = { url ->
                         runCatching {
                             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
@@ -90,6 +111,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingIntentState = intent
+    }
+
+    companion object {
+        const val EXTRA_OPEN_DEAL_ID = "open_deal_id"
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -97,6 +128,8 @@ class MainActivity : ComponentActivity() {
 private fun SwitchPulseRoot(
     viewModel: MainViewModel,
     initialTab: Int,
+    pendingIntent: Intent?,
+    onIntentConsumed: () -> Unit,
     onOpenUrl: (String) -> Unit
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -104,6 +137,19 @@ private fun SwitchPulseRoot(
     var showAddGameSheet by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(pendingIntent) {
+        val current = pendingIntent ?: return@LaunchedEffect
+        if (current.getBooleanExtra(DealsSyncWorker.EXTRA_OPEN_UPDATES, false)) {
+            selectedTab = 2
+        }
+        val dealId = current.getStringExtra(MainActivity.EXTRA_OPEN_DEAL_ID)?.takeIf { it.isNotBlank() }
+        if (dealId != null) {
+            selectedTab = 0
+            viewModel.openDealById(dealId)
+        }
+        onIntentConsumed()
+    }
 
     LaunchedEffect(state.statusMessage) {
         val msg = state.statusMessage
@@ -257,6 +303,7 @@ private fun SwitchPulseRoot(
                 onSetGameRating = viewModel::setGameRating,
                 onSetGameOwned = viewModel::setGameOwned,
                 onSetGameNote = viewModel::setGameNote,
+                onSetGameTargetPrice = viewModel::setGameTargetPrice,
                 onRemoveGame = viewModel::removeLikedGame,
                 onOpenEshop = onOpenUrl,
                 onGenerateGamerSoul = viewModel::generateGamerSoul,
@@ -288,6 +335,10 @@ private fun SwitchPulseRoot(
                 onTestProviderConnection = { provider, pending -> viewModel.testProviderConnection(provider, pending) },
                 onRerankWithGeminiNow = viewModel::rerankWithGeminiNow,
                 onSaveUserTastePrompt = viewModel::setUserTastePrompt,
+                onBackgroundRerankPolicyChange = viewModel::setBackgroundRerankPolicy,
+                onExportBackupJson = viewModel::exportBackupJson,
+                onImportBackupJson = viewModel::importBackupJson,
+                onBackupFeedback = viewModel::showStatusMessage,
                 onOpenLibraryTab = { selectedTab = 1 },
                 modifier = Modifier.padding(innerPadding)
             )
@@ -319,6 +370,9 @@ private fun SwitchPulseRoot(
                 onSetNote = { note ->
                     viewModel.setGameNote(existingEntry ?: activeDeal.toLikedGame(), note)
                 },
+                onSetTargetPrice = { target ->
+                    viewModel.setGameTargetPrice(existingEntry ?: activeDeal.toLikedGame(), target)
+                },
                 onHideDeal = { viewModel.hideDeal(activeDeal) },
                 onRefreshInsights = { viewModel.refreshDealInsights(activeDeal) }
             )
@@ -334,7 +388,8 @@ private fun SwitchPulseRoot(
                 onRefreshPicks = { viewModel.discoverGamesForSoul(freshBatch = true) },
                 onOpenEshop = onOpenUrl,
                 onToggleOwned = viewModel::setGameOwned,
-                onQuickRate = { game, stars -> viewModel.setGameRating(game, stars) }
+                onQuickRate = { game, stars -> viewModel.setGameRating(game, stars) },
+                onDismissPick = viewModel::dismissDiscoveryPick
             )
         }
     }

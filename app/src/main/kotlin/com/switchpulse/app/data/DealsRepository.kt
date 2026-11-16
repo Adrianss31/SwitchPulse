@@ -2,6 +2,7 @@ package com.switchpulse.app.data
 
 import android.content.Context
 import androidx.glance.appwidget.updateAll
+import com.switchpulse.app.data.local.CachedSteamLookup
 import com.switchpulse.app.data.local.CoverBitmapCache
 import com.switchpulse.app.data.local.PreferencesStore
 import com.switchpulse.app.data.model.AiDiscoveryPick
@@ -18,58 +19,85 @@ import com.switchpulse.app.data.remote.GeminiModels
 import com.switchpulse.app.data.remote.GeminiModelsClient
 import com.switchpulse.app.data.remote.GeminiReranker
 import com.switchpulse.app.data.remote.GeminiSoulClient
+import com.switchpulse.app.data.remote.GroundingBlockStore
 import com.switchpulse.app.data.remote.NintendoEshopClient
+import com.switchpulse.app.data.remote.SemanticRerankEntry
+import com.switchpulse.app.data.remote.SteamLookupCache
 import com.switchpulse.app.widget.EditorialBentoWidget
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 
 class DealsRepository(
     private val context: Context,
+    val sharedHttpClient: OkHttpClient = defaultSharedHttpClient(),
     val preferences: PreferencesStore = PreferencesStore(context),
-    private val eshopClient: NintendoEshopClient = NintendoEshopClient(),
-    private val geminiReranker: GeminiReranker = GeminiReranker(),
-    private val insightsClient: GameInsightsClient = GameInsightsClient(),
-    private val soulClient: GeminiSoulClient = GeminiSoulClient(),
-    private val modelsClient: GeminiModelsClient = GeminiModelsClient(),
-    val coverCache: CoverBitmapCache = CoverBitmapCache(context)
+    private val eshopClient: NintendoEshopClient = NintendoEshopClient(
+        httpClient = sharedHttpClient,
+        steamLookupCache = object : SteamLookupCache {
+            override suspend fun getCached(normTitles: List<String>, nowMs: Long): Map<String, CachedSteamLookup> =
+                preferences.database.getSteamLookups(normTitles, nowMs)
+
+            override suspend fun save(entries: List<CachedSteamLookup>) =
+                preferences.database.saveSteamLookups(entries)
+        }
+    ),
+    private val geminiReranker: GeminiReranker = GeminiReranker(httpClient = sharedHttpClient),
+    private val insightsClient: GameInsightsClient = GameInsightsClient(
+        httpClient = sharedHttpClient,
+        groundingBlockStore = object : GroundingBlockStore {
+            override suspend fun isBlocked(keyFingerprint: String): Boolean =
+                preferences.isGroundingBlocked(keyFingerprint)
+
+            override suspend fun markBlocked(keyFingerprint: String, blockedUntilMs: Long) =
+                preferences.markGroundingBlocked(keyFingerprint, blockedUntilMs)
+        }
+    ),
+    private val soulClient: GeminiSoulClient = GeminiSoulClient(httpClient = sharedHttpClient),
+    private val modelsClient: GeminiModelsClient = GeminiModelsClient(httpClient = sharedHttpClient),
+    val coverCache: CoverBitmapCache = CoverBitmapCache(context, httpClient = sharedHttpClient)
 ) {
     val settingsFlow: Flow<FilterSettings> = preferences.settingsFlow
     val cachedDealsFlow: Flow<List<Deal>> = preferences.cachedDealsFlow
 
-    val filteredAppDealsFlow: Flow<List<Deal>> = combine(
+    val allEligibleDealsFlow: Flow<List<Deal>> = combine(
         cachedDealsFlow,
         settingsFlow
     ) { deals, settings ->
-        DealFilterEngine.filterTopTen(
+        DealFilterEngine.filterAllEligible(
             rawDeals = deals,
             settings = settings,
-            platformOverride = settings.appPlatformFilter,
-            limit = APP_FEED_LIMIT
+            platformOverride = settings.appPlatformFilter
         )
     }
+        .distinctUntilChanged()
+        .flowOn(Dispatchers.Default)
 
-    suspend fun refreshDeals(forceAiRerank: Boolean = false): Result<List<Deal>> {
+    val filteredAppDealsFlow: Flow<List<Deal>> = allEligibleDealsFlow
+        .combine(settingsFlow) { allEligible, _ ->
+            allEligible.take(APP_FEED_LIMIT)
+        }
+        .distinctUntilChanged()
+        .flowOn(Dispatchers.Default)
+
+    suspend fun refreshDeals(
+        forceAiRerank: Boolean = false,
+        allowBackgroundAi: Boolean = true
+    ): Result<List<Deal>> {
         return runCatching {
             val settings = preferences.getSettings()
-            val cachedById = preferences.getCachedDeals().associateBy { it.id }
-            val fetchedDeals = eshopClient.fetchPopularDeals(likedGames = settings.likedGames).map { deal ->
-                // Preserve any prior AI score until new rerank completes or cache hits.
-                val prev = cachedById[deal.id]
-                if (prev != null && prev.aiAffinityScore != null) {
-                    deal.copy(
-                        aiAffinityScore = prev.aiAffinityScore,
-                        aiReason = prev.aiReason,
-                        aiDetailedReason = prev.aiDetailedReason
-                    )
-                } else {
-                    deal
-                }
-            }
+            val fetchedDeals = eshopClient.fetchPopularDeals(likedGames = settings.likedGames)
+            val annotatedDeals = preferences.database.recordAndAnnotatePriceHistory(fetchedDeals)
 
-            val freshDeals = applyGeminiIfEligible(
-                deals = fetchedDeals,
+            val freshDeals = applyAiWithPerDealCache(
+                deals = annotatedDeals,
                 settings = settings,
-                force = forceAiRerank
+                force = forceAiRerank,
+                allowAiCall = allowBackgroundAi
             )
 
             val now = System.currentTimeMillis()
@@ -86,13 +114,16 @@ class DealsRepository(
             if (cached.isEmpty()) {
                 return@runCatching "Nessuna offerta in cache: ricarica prima il feed."
             }
-            val cleared = cached.map {
-                it.copy(aiAffinityScore = null, aiReason = null, aiDetailedReason = null)
+            val cleared = if (force) {
+                cached.map { it.copy(aiAffinityScore = null, aiReason = null, aiDetailedReason = null) }
+            } else {
+                cached
             }
-            val updated = applyGeminiIfEligible(
+            val updated = applyAiWithPerDealCache(
                 deals = cleared,
                 settings = settings,
-                force = force
+                force = force,
+                allowAiCall = true
             )
             preferences.saveCachedDeals(updated)
             updateWidgetForSettings(updated, settings)
@@ -100,16 +131,18 @@ class DealsRepository(
         }
     }
 
-    private suspend fun applyGeminiIfEligible(
+    private suspend fun applyAiWithPerDealCache(
         deals: List<Deal>,
         settings: FilterSettings,
-        force: Boolean
+        force: Boolean,
+        allowAiCall: Boolean
     ): List<Deal> {
         val ratedGames = settings.likedGames.filter { it.isPositiveRating || it.isNegativeRating }
+        val hasTasteSignals = ratedGames.isNotEmpty() || settings.userTastePrompt.isNotBlank()
         val rerankTask = settings.rerankTarget
         val rerankKey = settings.apiKeyFor(rerankTask.provider)
         val useAi = rerankKey.isNotBlank() &&
-            ratedGames.isNotEmpty() &&
+            hasTasteSignals &&
             (settings.recommendationWeight > 0 || settings.forYouOnlyMode)
 
         if (!useAi) {
@@ -117,8 +150,8 @@ class DealsRepository(
                 !settings.hasAnyAiKey() -> ""
                 rerankKey.isBlank() ->
                     "Chiave mancante per ${rerankTask.provider.displayName} (task Classifica) · aggiungila in Impostazioni"
-                ratedGames.isEmpty() ->
-                    "Chiave salvata (${rerankTask.provider.shortLabel} · ${rerankTask.modelId}) · assegna almeno un voto 1–2★ o 4–5★ nella Libreria"
+                !hasTasteSignals ->
+                    "Chiave salvata (${rerankTask.provider.shortLabel} · ${rerankTask.modelId}) · vota un titolo o scrivi le preferenze"
                 else -> "Peso raccomandazioni a 0% · AI in pausa"
             }
             if (msg.isNotBlank() || settings.geminiStatusSummary.isNotBlank()) {
@@ -129,64 +162,107 @@ class DealsRepository(
             }
         }
 
-        val aiTargets = DealFilterEngine
-            .selectCandidatesForAi(deals, settings, limit = GeminiReranker.MAX_CANDIDATES)
-            .ifEmpty { deals.sortedByDescending { it.hotScore }.take(GeminiReranker.MAX_CANDIDATES) }
-
-        val signature = geminiReranker.computeSignature(
+        val profileSig = geminiReranker.computeProfileSignature(
             modelId = rerankTask.modelId,
             likedGames = settings.likedGames,
-            candidates = aiTargets,
             userTastePrompt = settings.userTastePrompt,
             provider = rerankTask.provider
         )
-        val hasCachedAi = aiTargets.any { it.aiAffinityScore != null }
-        if (!force && signature == settings.geminiSignature && hasCachedAi) {
-            val aiCount = deals.count { it.aiAffinityScore != null }
+
+        val cachedByNormTitle: MutableMap<String, SemanticRerankEntry> = if (force) {
+            LinkedHashMap()
+        } else {
+            preferences.database.getAiScoresForProfile(profileSig).toMutableMap()
+        }
+
+        // Attach already-cached per-deal scores matching this taste profile signature first.
+        val preAttached = deals.map { deal ->
+            val cachedEntry = cachedByNormTitle[DealTitleNormalizer.normalize(deal.title)]
+            if (cachedEntry != null) {
+                deal.copy(
+                    aiAffinityScore = cachedEntry.score,
+                    aiReason = cachedEntry.reason,
+                    aiDetailedReason = cachedEntry.detailedReason
+                )
+            } else {
+                deal.copy(aiAffinityScore = null, aiReason = null, aiDetailedReason = null)
+            }
+        }
+
+        val aiTargets = DealFilterEngine
+            .selectCandidatesForAi(preAttached, settings, limit = GeminiReranker.MAX_CANDIDATES)
+            .ifEmpty { preAttached.sortedByDescending { it.hotScore }.take(GeminiReranker.MAX_CANDIDATES) }
+
+        val targetsNeedingAi = if (force) {
+            aiTargets
+        } else {
+            aiTargets.filter { DealTitleNormalizer.normalize(it.title) !in cachedByNormTitle }
+        }
+
+        if (targetsNeedingAi.isEmpty()) {
+            val evaluatedCount = aiTargets.count { DealTitleNormalizer.normalize(it.title) in cachedByNormTitle }
             preferences.saveGeminiRunState(
-                statusSummary = "✨ Cache AI attiva (${rerankTask.provider.shortLabel} · ${rerankTask.modelId}) · $aiCount offerte già valutate",
-                signature = signature
+                statusSummary = "✨ Cache AI attiva (${rerankTask.provider.shortLabel} · ${rerankTask.modelId}) · $evaluatedCount/${aiTargets.size} già valutate",
+                signature = profileSig
             )
-            return deals
+            return preAttached
+        }
+
+        if (!allowAiCall) {
+            val cachedCount = aiTargets.count { DealTitleNormalizer.normalize(it.title) in cachedByNormTitle }
+            preferences.saveGeminiRunState(
+                statusSummary = "✨ Cache parziale ($cachedCount/${aiTargets.size}) · rerank automatico in pausa su rete attuale",
+                signature = profileSig
+            )
+            return preAttached
         }
 
         val outcome = geminiReranker.rerank(
             apiKey = rerankKey,
             likedGames = settings.likedGames,
-            candidates = aiTargets,
+            candidates = targetsNeedingAi,
             modelId = rerankTask.modelId,
             userTastePrompt = settings.userTastePrompt,
             provider = rerankTask.provider
         )
+
+        if (outcome.scores.isNotEmpty()) {
+            val newlyScoredByNorm = LinkedHashMap<String, SemanticRerankEntry>()
+            targetsNeedingAi.forEach { target ->
+                val entry = outcome.scores[target.id] ?: return@forEach
+                val norm = DealTitleNormalizer.normalize(target.title)
+                newlyScoredByNorm.putIfAbsent(norm, entry)
+                cachedByNormTitle.putIfAbsent(norm, entry)
+            }
+            preferences.database.saveAiScoresForProfile(profileSig, newlyScoredByNorm)
+        }
+
+        val finalEvaluated = aiTargets.count { DealTitleNormalizer.normalize(it.title) in cachedByNormTitle }
+        val finalStatus = if (outcome.isError && cachedByNormTitle.isNotEmpty()) {
+            "${outcome.statusSummary} · $finalEvaluated/${aiTargets.size} da cache"
+        } else if (!outcome.isError && targetsNeedingAi.size < aiTargets.size) {
+            "✨ ${rerankTask.provider.shortLabel} (${rerankTask.modelId}) · $finalEvaluated/${aiTargets.size} (+${outcome.scores.size} nuove)"
+        } else {
+            outcome.statusSummary
+        }
+
         preferences.saveGeminiRunState(
-            statusSummary = outcome.statusSummary,
-            signature = if (outcome.isError) "" else signature
+            statusSummary = finalStatus,
+            signature = if (outcome.isError && cachedByNormTitle.isEmpty()) "" else profileSig
         )
 
-        if (outcome.scores.isEmpty()) {
-            return if (outcome.isError) {
-                deals
-            } else {
-                deals.map { it.copy(aiAffinityScore = null, aiReason = null, aiDetailedReason = null) }
-            }
-        }
-
-        // Propagate AI evaluations across Switch 1 / Switch 2 sibling editions of the same normalized title.
-        val scoresByNormTitle = LinkedHashMap<String, com.switchpulse.app.data.remote.SemanticRerankEntry>()
-        aiTargets.forEach { target ->
-            val entry = outcome.scores[target.id] ?: return@forEach
-            val norm = DealTitleNormalizer.normalize(target.title)
-            scoresByNormTitle.putIfAbsent(norm, entry)
-        }
-
-        return deals.map { deal ->
+        return preAttached.map { deal ->
             val entry = outcome.scores[deal.id]
-                ?: scoresByNormTitle[DealTitleNormalizer.normalize(deal.title)]
-            deal.copy(
-                aiAffinityScore = entry?.score,
-                aiReason = entry?.reason,
-                aiDetailedReason = entry?.detailedReason
-            )
+                ?: cachedByNormTitle[DealTitleNormalizer.normalize(deal.title)]
+            if (entry != null) {
+                deal.copy(
+                    aiAffinityScore = entry.score,
+                    aiReason = entry.reason,
+                    aiDetailedReason = entry.detailedReason
+                )
+            } else {
+                deal
+            }
         }
     }
 
@@ -205,6 +281,13 @@ class DealsRepository(
                 return@runCatching "Tutte le offerte visibili sono già valutate"
             }
 
+            val profileSig = geminiReranker.computeProfileSignature(
+                modelId = rerankTask.modelId,
+                likedGames = settings.likedGames,
+                userTastePrompt = settings.userTastePrompt,
+                provider = rerankTask.provider
+            )
+
             val outcome = geminiReranker.rerank(
                 apiKey = rerankKey,
                 likedGames = settings.likedGames,
@@ -218,11 +301,12 @@ class DealsRepository(
                 return@runCatching outcome.statusSummary
             }
 
-            val byNorm = LinkedHashMap<String, com.switchpulse.app.data.remote.SemanticRerankEntry>()
+            val byNorm = LinkedHashMap<String, SemanticRerankEntry>()
             missing.forEach { target ->
                 val entry = outcome.scores[target.id] ?: return@forEach
                 byNorm.putIfAbsent(DealTitleNormalizer.normalize(target.title), entry)
             }
+            preferences.database.saveAiScoresForProfile(profileSig, byNorm)
 
             val mergedDeals = preferences.getCachedDeals().map { deal ->
                 val newlyEvaluated = outcome.scores[deal.id]
@@ -240,9 +324,31 @@ class DealsRepository(
             preferences.saveCachedDeals(mergedDeals)
             val totalEvaluated = mergedDeals.count { it.aiAffinityScore != null }
             val msg = "✨ ${rerankTask.provider.shortLabel} (${rerankTask.modelId}) · +${outcome.scores.size} completate ($totalEvaluated totali valutate)"
-            preferences.saveGeminiRunState(msg, settings.geminiSignature)
+            preferences.saveGeminiRunState(msg, profileSig)
             updateWidgetForSettings(mergedDeals, settings)
             msg
+        }
+    }
+
+    fun findWishlistPriceAlerts(deals: List<Deal>, settings: FilterSettings): List<Pair<LikedGame, Deal>> {
+        val watchList = settings.likedGames.filter { !it.isOwned && it.targetPriceEur != null }
+        if (watchList.isEmpty() || deals.isEmpty()) return emptyList()
+
+        val dealById = deals.associateBy { it.id }
+        val dealByNorm = deals
+            .sortedBy { it.discountedPriceEur }
+            .associateBy { DealTitleNormalizer.normalize(it.title) }
+
+        return watchList.mapNotNull { watched ->
+            val threshold = watched.targetPriceEur ?: return@mapNotNull null
+            val matchingDeal = dealById[watched.id]
+                ?: dealByNorm[DealTitleNormalizer.normalize(watched.title)]
+                ?: return@mapNotNull null
+            if (matchingDeal.discountedPriceEur <= threshold + 0.01) {
+                watched to matchingDeal
+            } else {
+                null
+            }
         }
     }
 
@@ -310,7 +416,9 @@ class DealsRepository(
         val insightsTask = settings.insightsTarget
         val currentProfileSig = GameInsightsClient.computeProfileSignature(
             likedGames = settings.likedGames,
-            userTastePrompt = settings.userTastePrompt
+            userTastePrompt = settings.userTastePrompt,
+            provider = insightsTask.provider,
+            modelId = insightsTask.modelId
         )
         if (!forceRefresh) {
             val cached = preferences.getCachedInsight(deal.id)
@@ -385,7 +493,8 @@ class DealsRepository(
             modelId = soulTask.modelId,
             userTastePrompt = settings.userTastePrompt,
             excludePreviousTitles = previousTitles,
-            provider = soulTask.provider
+            provider = soulTask.provider,
+            dismissedTitles = settings.dismissedDiscoveryTitles
         )
         val rawPicks = picksResult.getOrElse { return Result.failure(it) }
         val enriched = runCatching { eshopClient.enrichDiscoveryPicks(rawPicks) }.getOrDefault(rawPicks)
@@ -413,5 +522,10 @@ class DealsRepository(
     companion object {
         const val APP_FEED_LIMIT = 30
         const val WIDGET_FEED_LIMIT = 10
+
+        fun defaultSharedHttpClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(45, TimeUnit.SECONDS)
+            .build()
     }
 }

@@ -10,6 +10,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.File
+import java.security.MessageDigest
 
 class GitHubUpdaterTest {
 
@@ -66,6 +68,68 @@ class GitHubUpdaterTest {
         val release = (result as UpdateCheckResult.UpdateAvailable).release
         assertEquals("v1.0.5", release.tagName)
         assertEquals("SwitchPulse-v1.0.5.apk", release.apkFileName)
+    }
+
+    @Test
+    fun `checkLatestRelease parses sha256 digest and verifies apk integrity`() = runTest {
+        val fakeApk = "PK-fake-apk-bytes".toByteArray()
+        val digestHex = MessageDigest.getInstance("SHA-256")
+            .digest(fakeApk)
+            .joinToString("") { "%02x".format(it) }
+
+        val json = """
+            {
+              "tag_name": "v1.0.5",
+              "name": "SwitchPulse 1.0.5",
+              "assets": [
+                {
+                  "name": "SwitchPulse-v1.0.5.apk",
+                  "size": ${fakeApk.size},
+                  "digest": "sha256:$digestHex",
+                  "browser_download_url": "${server.url("/download/SwitchPulse-v1.0.5.apk")}"
+                }
+              ]
+            }
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(json))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(String(fakeApk)))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(String(fakeApk)))
+
+        val updater = GitHubUpdater(OkHttpClient())
+        val checkResult = updater.checkLatestRelease(
+            repoSlug = "user/SwitchPulse",
+            currentVersionName = "1.0.0",
+            currentVersionCode = 1,
+            overrideEndpointUrl = server.url("/releases/latest").toString()
+        ) as UpdateCheckResult.UpdateAvailable
+
+        assertEquals(digestHex, checkResult.release.apkSha256)
+
+        val tempDir = File(System.getProperty("java.io.tmpdir"), "sp-updater-test")
+        tempDir.deleteRecursively()
+        try {
+            val okTarget = File(tempDir, "ok.apk")
+            val downloaded = updater.downloadToFile(
+                downloadUrl = checkResult.release.apkDownloadUrl,
+                targetFile = okTarget,
+                expectedSha256 = checkResult.release.apkSha256
+            )
+            assertTrue(downloaded.exists())
+            assertEquals(String(fakeApk), downloaded.readText())
+
+            val badTarget = File(tempDir, "bad.apk")
+            val badShaResult = runCatching {
+                updater.downloadToFile(
+                    downloadUrl = checkResult.release.apkDownloadUrl,
+                    targetFile = badTarget,
+                    expectedSha256 = "0".repeat(64)
+                )
+            }
+            assertTrue(badShaResult.isFailure)
+            assertFalse(badTarget.exists())
+        } finally {
+            tempDir.deleteRecursively()
+        }
     }
 
     @Test

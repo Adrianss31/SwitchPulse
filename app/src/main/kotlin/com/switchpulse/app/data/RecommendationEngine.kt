@@ -149,9 +149,7 @@ object RecommendationEngine {
             }
 
             // Anti-shovelware guardrail: unverified low-acclaim titles cannot ride positive tag overlap.
-            val isVerifiedQuality = deal.steamReviewCount >= 300 ||
-                deal.chartRank != null ||
-                deal.publisher.lowercase().contains("nintendo")
+            val isVerifiedQuality = DealScorer.isVerifiedQualityDeal(deal)
             val qualityScale = if (isVerifiedQuality) 1.0 else 0.25
 
             val adjustment = if (combinedAffinity >= 0.0) {

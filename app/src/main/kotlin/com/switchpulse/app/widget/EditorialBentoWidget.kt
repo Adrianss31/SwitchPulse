@@ -47,7 +47,7 @@ import androidx.glance.text.TextStyle
 import com.switchpulse.app.MainActivity
 import com.switchpulse.app.R
 import com.switchpulse.app.data.DealFilterEngine
-import com.switchpulse.app.data.DealsRepository
+import com.switchpulse.app.SwitchPulseApp
 import com.switchpulse.app.data.local.CoverBitmapCache
 import com.switchpulse.app.data.local.PreferencesStore
 import com.switchpulse.app.data.model.Deal
@@ -66,7 +66,7 @@ class EditorialBentoWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val prefs = PreferencesStore(context)
-        val coverCache = CoverBitmapCache(context)
+        val coverCache = SwitchPulseApp.containerFrom(context).repository.coverCache
 
         val snapshot = withContext(Dispatchers.IO) {
             val settings = prefs.getSettings()
@@ -327,13 +327,14 @@ private fun HeroDealCard(
     deal: Deal,
     bitmap: android.graphics.Bitmap?
 ) {
+    val context = androidx.glance.LocalContext.current
     Box(
         modifier = GlanceModifier
             .fillMaxWidth()
             .height(108.dp)
             .cornerRadius(18.dp)
             .background(BentoPalette.heroFallback)
-            .clickable(actionStartActivity(openEshopIntent(deal.eshopUrl)))
+            .clickable(actionStartActivity(openDealDetailIntent(context, deal.id)))
     ) {
         if (bitmap != null) {
             Image(
@@ -445,10 +446,11 @@ private fun DealListRow(
     deal: Deal,
     bitmap: android.graphics.Bitmap?
 ) {
+    val context = androidx.glance.LocalContext.current
     Row(
         modifier = GlanceModifier
             .fillMaxWidth()
-            .clickable(actionStartActivity(openEshopIntent(deal.eshopUrl)))
+            .clickable(actionStartActivity(openDealDetailIntent(context, deal.id)))
             .padding(vertical = 7.dp, horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -538,9 +540,11 @@ private fun DealListRow(
     }
 }
 
-private fun openEshopIntent(url: String): Intent {
-    return Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+private fun openDealDetailIntent(context: Context, dealId: String): Intent {
+    return Intent(context, MainActivity::class.java).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        data = Uri.parse("switchpulse://deal/$dealId")
+        putExtra(MainActivity.EXTRA_OPEN_DEAL_ID, dealId)
     }
 }
 
@@ -558,7 +562,7 @@ class SelectWidgetPlatformAction : ActionCallback {
     ) {
         val raw = parameters[KEY_PLATFORM] ?: return
         val filter = runCatching { PlatformFilter.valueOf(raw) }.getOrNull() ?: return
-        val repo = DealsRepository(context)
+        val repo = SwitchPulseApp.containerFrom(context).repository
         repo.preferences.updateWidgetPlatformFilter(filter)
         repo.notifyWidgetChanged()
         EditorialBentoWidget().updateAll(context)

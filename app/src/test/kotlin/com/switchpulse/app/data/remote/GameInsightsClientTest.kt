@@ -2,6 +2,7 @@ package com.switchpulse.app.data.remote
 
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.LikedGame
+import com.switchpulse.app.data.model.MetacriticOrigin
 import com.switchpulse.app.data.model.Platform
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -122,8 +123,9 @@ class GameInsightsClientTest {
 
         val insights = client.fetchInsights(deal = sampleDeal(), geminiApiKey = "")
         assertEquals(93, insights.metacriticScore)
+        assertEquals(MetacriticOrigin.STEAM_PC, insights.metacriticOrigin)
         assertNull(insights.hltbMainHours)
-        assertEquals("Steam Metacritic API", insights.sourceLabel)
+        assertEquals("Steam Metacritic API (PC)", insights.sourceLabel)
     }
 
     @Test
@@ -205,6 +207,8 @@ class GameInsightsClientTest {
         assertEquals("~48 ore", insights.hltbMainExtraHours)
         assertEquals("~95 ore", insights.hltbCompletionistHours)
         assertEquals("Imperdibile per te", insights.aiVerdict)
+        assertEquals(MetacriticOrigin.AI_ESTIMATE, insights.metacriticOrigin)
+        assertTrue(insights.hltbIsEstimated)
         assertTrue(insights.summaryNote!!.contains("Hollow Knight"))
         assertTrue(insights.sourceLabel.contains("Stima critica"))
     }
@@ -302,5 +306,31 @@ class GameInsightsClientTest {
         assertEquals("Consigliatissimo", second.aiVerdict)
         assertEquals(1, groundingAttempts)
         assertEquals(2, directAttempts)
+    }
+
+    @Test
+    fun `fetchInsights skips external lookups when allowExternalMetadataLookup is false`() = runBlocking {
+        var requestsSeen = 0
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requestsSeen++
+                return MockResponse().setResponseCode(500)
+            }
+        }
+
+        val client = GameInsightsClient(
+            httpClient = OkHttpClient(),
+            steamAppDetailsUrl = server.url("/api/appdetails").toString(),
+            geminiEndpointOverride = server.url("/v1beta/models/gemini-4-hydrogen:generateContent").toString(),
+            metacriticBaseUrl = server.url("/").toString(),
+            allowExternalMetadataLookup = false
+        )
+
+        val insights = client.fetchInsights(
+            deal = sampleDeal(steamAppId = 1145360),
+            geminiApiKey = ""
+        )
+        assertEquals(0, requestsSeen)
+        assertNull(insights.metacriticScore)
     }
 }

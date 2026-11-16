@@ -4,18 +4,20 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.switchpulse.app.BuildConfig
-import com.switchpulse.app.data.DealsRepository
+import com.switchpulse.app.SwitchPulseApp
+import com.switchpulse.app.data.local.BackupManager
 import com.switchpulse.app.data.model.AiProvider
+import com.switchpulse.app.data.model.BackgroundRerankPolicy
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.PlatformFilter
-import com.switchpulse.app.update.GitHubUpdater
 import com.switchpulse.app.update.InstallLaunchResult
 import com.switchpulse.app.update.ReleaseInfo
 import com.switchpulse.app.update.UpdateCheckResult
 import com.switchpulse.app.worker.SyncScheduler
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -38,6 +40,7 @@ sealed interface UpdateUiState {
 
 data class MainUiState(
     val deals: List<Deal> = emptyList(),
+    val allEligibleDeals: List<Deal> = emptyList(),
     val settings: FilterSettings = FilterSettings(),
     val isRefreshing: Boolean = false,
     val errorMessage: String? = null,
@@ -77,21 +80,27 @@ private data class TransientUiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
-    private val repository = DealsRepository(appContext)
-    private val updater = GitHubUpdater()
+    private val container = SwitchPulseApp.containerFrom(appContext)
+    private val repository = container.repository
+    private val updater = container.updater
+    private var profileSearchJob: Job? = null
 
     private val transientState = MutableStateFlow(TransientUiState())
 
     val uiState: StateFlow<MainUiState> = combine(
         repository.filteredAppDealsFlow,
+        repository.allEligibleDealsFlow,
         repository.settingsFlow,
         transientState
-    ) { deals, settings, transient ->
+    ) { deals, allEligibleDeals, settings, transient ->
         val freshSelected = transient.selectedDeal?.let { sel ->
-            deals.firstOrNull { it.id == sel.id } ?: sel
+            allEligibleDeals.firstOrNull { it.id == sel.id }
+                ?: deals.firstOrNull { it.id == sel.id }
+                ?: sel
         }
         MainUiState(
             deals = deals,
+            allEligibleDeals = allEligibleDeals,
             settings = settings,
             isRefreshing = transient.isRefreshing,
             errorMessage = transient.errorMessage,
@@ -327,11 +336,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun searchProfileGames(query: String) {
+        profileSearchJob?.cancel()
         if (query.trim().length < 2) {
-            transientState.update { it.copy(profileSearchResults = emptyList()) }
+            transientState.update { it.copy(profileSearchResults = emptyList(), isSearchingProfile = false) }
             return
         }
-        viewModelScope.launch {
+        profileSearchJob = viewModelScope.launch {
             transientState.update { it.copy(isSearchingProfile = true) }
             val results = runCatching {
                 repository.searchGamesForProfile(query)
@@ -361,6 +371,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setForYouOnlyMode(enabled: Boolean) {
         viewModelScope.launch {
             repository.preferences.updateForYouMode(enabled)
+            repository.notifyWidgetChanged()
         }
     }
 
@@ -574,7 +585,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching {
                 transientState.update { it.copy(updateState = UpdateUiState.Downloading(release, 0f)) }
-                val apkFile = updater.downloadApk(appContext, release.apkDownloadUrl) { progress ->
+                val apkFile = updater.downloadApk(
+                    context = appContext,
+                    downloadUrl = release.apkDownloadUrl,
+                    expectedSha256 = release.apkSha256
+                ) { progress ->
                     transientState.update { it.copy(updateState = UpdateUiState.Downloading(release, progress)) }
                 }
                 transientState.update { it.copy(updateState = UpdateUiState.ReadyToInstall(release, apkFile)) }
@@ -599,6 +614,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(statusMessage = "Consenti l'installazione da SwitchPulse nelle impostazioni e riprova.")
             }
         }
+    }
+
+    fun openDealById(dealId: String) {
+        viewModelScope.launch {
+            val deal = uiState.value.allEligibleDeals.firstOrNull { it.id == dealId }
+                ?: uiState.value.deals.firstOrNull { it.id == dealId }
+                ?: repository.preferences.getCachedDeals().firstOrNull { it.id == dealId }
+            if (deal != null) {
+                openDealDetail(deal)
+            } else {
+                transientState.update {
+                    it.copy(statusMessage = "Offerta non più disponibile in cache.")
+                }
+            }
+        }
+    }
+
+    fun setGameTargetPrice(game: LikedGame, targetPriceEur: Double?) {
+        viewModelScope.launch {
+            repository.preferences.setGameTargetPrice(game, targetPriceEur)
+            val msg = if (targetPriceEur != null) {
+                "Avviso wishlist impostato sotto €${"%.2f".format(java.util.Locale.US, targetPriceEur)}"
+            } else {
+                "Avviso prezzo rimosso per ${game.title}"
+            }
+            transientState.update { it.copy(statusMessage = msg) }
+        }
+    }
+
+    fun setBackgroundRerankPolicy(policy: BackgroundRerankPolicy) {
+        viewModelScope.launch {
+            repository.preferences.updateBackgroundRerankPolicy(policy)
+        }
+    }
+
+    fun dismissDiscoveryPick(title: String) {
+        viewModelScope.launch {
+            repository.preferences.dismissDiscoveryPick(title)
+            transientState.update { it.copy(statusMessage = "Suggerimento scartato: $title") }
+        }
+    }
+
+    fun exportBackupJson(): String {
+        return BackupManager.exportToJson(uiState.value.settings)
+    }
+
+    fun importBackupJson(rawJson: String) {
+        viewModelScope.launch {
+            BackupManager.decodeFromJson(rawJson).fold(
+                onSuccess = { backup ->
+                    repository.preferences.importBackup(backup)
+                    repository.notifyWidgetChanged()
+                    transientState.update {
+                        it.copy(statusMessage = "Backup ripristinato (${backup.likedGames.size} titoli in libreria)")
+                    }
+                },
+                onFailure = { err ->
+                    transientState.update {
+                        it.copy(statusMessage = "File backup non valido: ${err.message ?: "formato errato"}")
+                    }
+                }
+            )
+        }
+    }
+
+    fun showStatusMessage(message: String) {
+        transientState.update { it.copy(statusMessage = message) }
     }
 
     fun clearStatusMessage() {

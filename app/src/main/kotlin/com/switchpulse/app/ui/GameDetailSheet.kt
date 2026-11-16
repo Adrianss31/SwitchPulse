@@ -74,6 +74,7 @@ import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
 import com.switchpulse.app.data.model.LikedGame
+import com.switchpulse.app.data.model.MetacriticOrigin
 import com.switchpulse.app.ui.theme.EshopCrimson
 import com.switchpulse.app.ui.theme.EshopCrimsonSoft
 
@@ -90,6 +91,7 @@ fun GameDetailSheet(
     onSetRating: (Int?) -> Unit,
     onSetOwned: (Boolean) -> Unit,
     onSetNote: (String?) -> Unit = {},
+    onSetTargetPrice: (Double?) -> Unit = {},
     onHideDeal: () -> Unit,
     onRefreshInsights: () -> Unit
 ) {
@@ -102,6 +104,10 @@ fun GameDetailSheet(
     val savedNote = libraryEntry?.userNote.orEmpty()
     var noteDraft by remember(deal.id, savedNote) { mutableStateOf(savedNote) }
     val isNoteDirty = noteDraft.trim() != savedNote.trim()
+    val savedTargetPrice = libraryEntry?.targetPriceEur
+    var targetPriceDraft by remember(deal.id, savedTargetPrice) {
+        mutableStateOf(savedTargetPrice?.let { String.format(java.util.Locale.US, "%.2f", it) }.orEmpty())
+    }
     val keyboard = LocalSoftwareKeyboardController.current
 
     ModalBottomSheet(
@@ -155,10 +161,11 @@ fun GameDetailSheet(
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                 )
                 val expiry = DealFilterEngine.formatExpiryShort(deal.endsAtIso)
-                val devPart = deal.developer?.takeIf { it.isNotBlank() && it != deal.publisher }
+                val pubPart = deal.displayPublisher.takeIf { it.isNotBlank() }
+                val devPart = deal.developer?.takeIf { it.isNotBlank() && it != deal.displayPublisher }
                 val metaParts = listOfNotNull(
                     deal.platform.displayName,
-                    deal.publisher,
+                    pubPart,
                     devPart?.let { "Dev: $it" },
                     expiry
                 )
@@ -183,6 +190,25 @@ fun GameDetailSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textDecoration = TextDecoration.LineThrough
                     )
+                    if (deal.isHistoricalLow) {
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = Color(0xFF15803D)
+                        ) {
+                            Text(
+                                text = "Minimo storico",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    } else if (deal.lowestSeenPriceEur != null && deal.lowestSeenPriceEur < deal.discountedPriceEur) {
+                        Text(
+                            text = "Min: ${DealFilterEngine.formatEur(deal.lowestSeenPriceEur)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
@@ -315,6 +341,74 @@ fun GameDetailSheet(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    if (!isOwned) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = if (savedTargetPrice != null) {
+                                    "Avviso wishlist attivo: sotto ${DealFilterEngine.formatEur(savedTargetPrice)}"
+                                } else {
+                                    "Avviso prezzo wishlist (notifica in background)"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (savedTargetPrice != null) EshopCrimson else MaterialTheme.colorScheme.onSurface
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(20.0, 15.0, 10.0, 5.0).forEach { preset ->
+                                    val selected = savedTargetPrice != null && kotlin.math.abs(savedTargetPrice - preset) < 0.05
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = {
+                                            onSetTargetPrice(if (selected) null else preset)
+                                        },
+                                        label = { Text("< ${preset.toInt()} €", fontSize = 12.sp) }
+                                    )
+                                }
+                                if (savedTargetPrice != null) {
+                                    TextButton(
+                                        onClick = { onSetTargetPrice(null) },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("Disattiva", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = targetPriceDraft,
+                                    onValueChange = { raw ->
+                                        if (raw.length <= 6) targetPriceDraft = raw
+                                    },
+                                    label = { Text("Soglia € esatta (es. 14.99)") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                                        imeAction = ImeAction.Done
+                                    ),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Button(
+                                    onClick = {
+                                        keyboard?.hide()
+                                        val parsed = targetPriceDraft.trim().replace(',', '.').toDoubleOrNull()
+                                        onSetTargetPrice(parsed?.takeIf { it > 0.0 })
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson)
+                                ) {
+                                    Text("Salva")
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -520,8 +614,13 @@ fun GameDetailSheet(
                                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
                                     color = if (score != null) Color.White else MaterialTheme.colorScheme.onSurface
                                 )
+                                val metaOriginLabel = when (insights?.metacriticOrigin) {
+                                    MetacriticOrigin.STEAM_PC -> "Metascore PC"
+                                    MetacriticOrigin.AI_ESTIMATE -> "Stima AI"
+                                    else -> "Metacritic"
+                                }
                                 Text(
-                                    text = "Metacritic",
+                                    text = metaOriginLabel,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (score != null) Color.White.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -533,13 +632,27 @@ fun GameDetailSheet(
                             color = MaterialTheme.colorScheme.surfaceContainerLowest,
                             modifier = Modifier.weight(0.68f)
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier.fillMaxWidth().padding(10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                HltbMetric("Storia", insights?.hltbMainHours)
-                                HltbMetric("Extra", insights?.hltbMainExtraHours)
-                                HltbMetric("100%", insights?.hltbCompletionistHours)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    HltbMetric("Storia", insights?.hltbMainHours)
+                                    HltbMetric("Extra", insights?.hltbMainExtraHours)
+                                    HltbMetric("100%", insights?.hltbCompletionistHours)
+                                }
+                                if (insights?.hltbIsEstimated == true &&
+                                    (!insights.hltbMainHours.isNullOrBlank() || !insights.hltbMainExtraHours.isNullOrBlank() || !insights.hltbCompletionistHours.isNullOrBlank())
+                                ) {
+                                    Text(
+                                        text = "Durata stimata dall'AI",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }

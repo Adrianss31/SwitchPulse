@@ -4,6 +4,8 @@ import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -72,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import com.switchpulse.app.BuildConfig
 import com.switchpulse.app.data.model.AiProvider
 import com.switchpulse.app.data.model.AiTaskTarget
+import com.switchpulse.app.data.model.BackgroundRerankPolicy
 import com.switchpulse.app.data.model.GeminiModelInfo
 import com.switchpulse.app.data.remote.GeminiModels
 import com.switchpulse.app.ui.theme.EshopCrimson
@@ -127,10 +130,43 @@ fun SettingsScreen(
     onTestProviderConnection: (AiProvider, String) -> Unit,
     onRerankWithGeminiNow: () -> Unit,
     onSaveUserTastePrompt: (String) -> Unit = {},
+    onBackgroundRerankPolicyChange: (BackgroundRerankPolicy) -> Unit = {},
+    onExportBackupJson: () -> String = { "" },
+    onImportBackupJson: (String) -> Unit = {},
+    onBackupFeedback: (String) -> Unit = {},
     onOpenLibraryTab: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            val payload = onExportBackupJson()
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(payload.toByteArray(Charsets.UTF_8))
+            } ?: error("Impossibile aprire il file di destinazione")
+        }.onSuccess {
+            onBackupFeedback("Backup JSON esportato correttamente (chiavi API escluse)")
+        }.onFailure { err ->
+            onBackupFeedback("Errore esportazione backup: ${err.message ?: "sconosciuto"}")
+        }
+    }
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                input.readBytes().toString(Charsets.UTF_8)
+            } ?: error("Impossibile leggere il file selezionato")
+        }.onSuccess { rawJson ->
+            onImportBackupJson(rawJson)
+        }.onFailure { err ->
+            onBackupFeedback("Errore lettura backup: ${err.message ?: "sconosciuto"}")
+        }
+    }
     var repoInput by remember(state.settings.githubRepo) {
         mutableStateOf(state.settings.githubRepo)
     }
@@ -572,6 +608,48 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                Text(
+                    text = "Analisi AI in background",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Controlla quando i sync automatici possono interrogare il provider AI per valutare nuovi sconti.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(
+                        BackgroundRerankPolicy.WIFI_ONLY to "Solo Wi-Fi",
+                        BackgroundRerankPolicy.ALWAYS to "Sempre",
+                        BackgroundRerankPolicy.OFF to "Mai"
+                    ).forEach { (policy, label) ->
+                        val selected = state.settings.backgroundRerankPolicy == policy
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(
+                                    if (selected) EshopCrimson
+                                    else MaterialTheme.colorScheme.surfaceContainerHigh
+                                )
+                                .clickable { onBackgroundRerankPolicyChange(policy) }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -730,6 +808,36 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = EshopCrimson
                         )
+                    }
+                }
+            }
+        }
+
+        // 4b. JSON Backup & Restore
+        item {
+            SettingsCard(title = "Backup & Ripristino (JSON)") {
+                Text(
+                    text = "Esporta o ripristina libreria, voti, preferenze, titoli nascosti e Anima del Giocatore. Per sicurezza le chiavi API non vengono mai incluse.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = { exportBackupLauncher.launch("switchpulse-backup.json") },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Esporta JSON")
+                    }
+                    Button(
+                        onClick = { importBackupLauncher.launch(arrayOf("application/json", "text/plain")) },
+                        colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Importa JSON")
                     }
                 }
             }

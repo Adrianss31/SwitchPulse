@@ -90,26 +90,38 @@ fun FeedScreen(
             .filter { it.rating != null }
             .associateBy { DealTitleNormalizer.normalize(it.title) }
     }
-    val hasTasteSignals = remember(state.settings.likedGames) {
-        state.settings.likedGames.any { it.isPositiveRating || it.isNegativeRating }
+    val hasTasteSignals = remember(state.settings.likedGames, state.settings.userTastePrompt) {
+        state.settings.likedGames.any { it.isPositiveRating || it.isNegativeRating } ||
+            state.settings.userTastePrompt.isNotBlank()
     }
 
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var sortMode by rememberSaveable { mutableStateOf(FeedSortMode.PERSONAL) }
+    var expiringSoonOnly by rememberSaveable { mutableStateOf(false) }
 
-    val displayedDeals = remember(state.deals, searchQuery, sortMode) {
+    val displayedDeals = remember(state.deals, state.allEligibleDeals, searchQuery, sortMode, expiringSoonOnly) {
         val q = searchQuery.trim().lowercase()
-        val filtered = if (q.isEmpty()) {
-            state.deals
+        val basePool = if (q.isNotEmpty() || expiringSoonOnly) {
+            state.allEligibleDeals.ifEmpty { state.deals }
         } else {
-            state.deals.filter { deal ->
+            state.deals
+        }
+        val queryFiltered = if (q.isEmpty()) {
+            basePool
+        } else {
+            basePool.filter { deal ->
                 deal.title.lowercase().contains(q) ||
-                    deal.publisher.lowercase().contains(q) ||
+                    deal.displayPublisher.lowercase().contains(q) ||
                     (deal.developer?.lowercase()?.contains(q) == true) ||
                     deal.steamTagNames.any { it.lowercase().contains(q) } ||
                     deal.gameCategories.any { it.lowercase().contains(q) }
             }
+        }
+        val filtered = if (expiringSoonOnly) {
+            queryFiltered.filter { DealFilterEngine.isUrgentExpiry(it.endsAtIso) }
+        } else {
+            queryFiltered
         }
         when (sortMode) {
             FeedSortMode.PERSONAL -> filtered
@@ -289,6 +301,19 @@ fun FeedScreen(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     )
                 }
+            }
+            Surface(
+                onClick = { expiringSoonOnly = !expiringSoonOnly },
+                shape = RoundedCornerShape(999.dp),
+                color = if (expiringSoonOnly) EshopCrimson else MaterialTheme.colorScheme.surfaceContainerHigh
+            ) {
+                Text(
+                    text = "In scadenza",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (expiringSoonOnly) FontWeight.Bold else FontWeight.Medium,
+                    color = if (expiringSoonOnly) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                )
             }
         }
 
@@ -628,27 +653,48 @@ private fun HeroDealCard(
         ) {
             Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
                 val matchLabel = formatMatchDisplay(deal)
-                if (matchLabel != null) {
-                    val pillColor = when {
-                        deal.matchSentiment == DealMatchSentiment.DISCOURAGED -> Color(0xD9B45309)
-                        deal.matchSentiment == DealMatchSentiment.NONE && deal.matchSource == DealMatchSource.GEMINI ->
-                            Color(0xC71E293B)
-                        else -> EshopCrimson.copy(alpha = 0.88f)
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = pillColor,
+                if (matchLabel != null || deal.isHistoricalLow) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(bottom = 4.dp)
                     ) {
-                        Text(
-                            text = matchLabel,
-                            color = Color.White,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                        )
+                        if (matchLabel != null) {
+                            val pillColor = when {
+                                deal.matchSentiment == DealMatchSentiment.DISCOURAGED -> Color(0xD9B45309)
+                                deal.matchSentiment == DealMatchSentiment.NONE && deal.matchSource == DealMatchSource.GEMINI ->
+                                    Color(0xC71E293B)
+                                else -> EshopCrimson.copy(alpha = 0.88f)
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = pillColor
+                            ) {
+                                Text(
+                                    text = matchLabel,
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        if (deal.isHistoricalLow) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xE615803D)
+                            ) {
+                                Text(
+                                    text = "Minimo",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
                     }
                 }
                 Text(
@@ -659,7 +705,8 @@ private fun HeroDealCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 val expiry = DealFilterEngine.formatExpiryShort(deal.endsAtIso)
-                val sub = if (expiry != null) "${deal.publisher} · $expiry" else deal.publisher
+                val pub = deal.displayPublisher
+                val sub = listOfNotNull(pub.takeIf { it.isNotBlank() }, expiry).joinToString(" · ")
                 Text(
                     text = sub,
                     color = Color.White.copy(alpha = 0.78f),
@@ -813,6 +860,19 @@ private fun DealRowCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    if (deal.isHistoricalLow) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = Color(0xFF15803D)
+                        ) {
+                            Text(
+                                text = "Minimo",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 9.sp),
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
                     if (userRating != null) {
                         Text(
                             text = "${userRating}★",
@@ -873,6 +933,23 @@ private fun FeedAiStatusPill(
     val statusText = state.settings.geminiStatusSummary
     val isError = statusText.startsWith("⚠️")
 
+    val isProfileDirty = remember(
+        state.settings.likedGames,
+        state.settings.userTastePrompt,
+        state.settings.rerankTarget,
+        state.settings.geminiSignature
+    ) {
+        hasTasteSignals && analyzedCount > 0 && (
+            state.settings.geminiSignature.isBlank() ||
+                com.switchpulse.app.data.remote.GeminiReranker.computeProfileSignature(
+                    modelId = task.modelId,
+                    likedGames = state.settings.likedGames,
+                    userTastePrompt = state.settings.userTastePrompt,
+                    provider = task.provider
+                ) != state.settings.geminiSignature
+            )
+    }
+
     val (label, actionLabel, onCardClick, onActionClick) = when {
         !hasKey -> Quadruple(
             "Motore locale · Aggiungi API key ${task.provider.shortLabel} in Filtri",
@@ -883,6 +960,12 @@ private fun FeedAiStatusPill(
         isError -> Quadruple(
             statusText.take(64),
             "Riprova",
+            onOpenSettingsTab,
+            onRerankAllNow
+        )
+        isProfileDirty -> Quadruple(
+            "✨ Profilo modificato · Valutazioni da aggiornare",
+            "Aggiorna AI",
             onOpenSettingsTab,
             onRerankAllNow
         )

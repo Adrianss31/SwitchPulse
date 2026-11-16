@@ -25,12 +25,28 @@ class CoverBitmapCache(
     private val cacheDir = File(context.cacheDir, "widget_covers").apply { mkdirs() }
 
     suspend fun prefetchCovers(deals: List<Pair<String, String?>>) = withContext(Dispatchers.IO) {
+        val activeKeys = deals.mapIndexed { index, (id, _) ->
+            val safeId = sanitizeId(id)
+            "${safeId}_${if (index == 0) "hero" else "thumb"}.jpg"
+        }.toSet()
+        pruneUnused(activeKeys)
+
         deals.forEachIndexed { index, (id, url) ->
             if (!url.isNullOrBlank()) {
                 val maxWidth = if (index == 0) 480 else 160
                 val file = coverFile(id, hero = index == 0)
                 if (!file.exists()) {
                     downloadAndScale(url, file, maxWidth)
+                }
+            }
+        }
+    }
+
+    private fun pruneUnused(activeFilenames: Set<String>) {
+        runCatching {
+            cacheDir.listFiles()?.forEach { file ->
+                if (file.isFile && file.name !in activeFilenames) {
+                    file.delete()
                 }
             }
         }
@@ -47,9 +63,12 @@ class CoverBitmapCache(
         return runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
     }
 
+    private fun sanitizeId(dealId: String): String =
+        dealId.replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "deal" }
+
     private fun coverFile(dealId: String, hero: Boolean): File {
         val suffix = if (hero) "hero" else "thumb"
-        return File(cacheDir, "${dealId}_$suffix.jpg")
+        return File(cacheDir, "${sanitizeId(dealId)}_$suffix.jpg")
     }
 
     private fun downloadAndScale(url: String, target: File, targetWidth: Int) {

@@ -1,6 +1,8 @@
 package com.switchpulse.app.data.remote
 
+import com.switchpulse.app.data.DealScorer
 import com.switchpulse.app.data.RecommendationEngine
+import com.switchpulse.app.data.local.CachedSteamLookup
 import com.switchpulse.app.data.model.AiDiscoveryPick
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealTitleNormalizer
@@ -33,6 +35,11 @@ import kotlin.math.log10
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+interface SteamLookupCache {
+    suspend fun getCached(normTitles: List<String>, nowMs: Long): Map<String, CachedSteamLookup>
+    suspend fun save(entries: List<CachedSteamLookup>)
+}
+
 class NintendoEshopClient(
     private val httpClient: OkHttpClient = defaultHttpClient(),
     private val searchBaseUrl: String = SEARCH_URL,
@@ -41,7 +48,8 @@ class NintendoEshopClient(
     private val steamSearchUrl: String = STEAM_SEARCH_URL,
     private val steamBrowseItemsUrl: String = STEAM_BROWSE_ITEMS_URL,
     private val steamTagListUrl: String = STEAM_TAG_LIST_URL,
-    private val clock: Clock = Clock.systemUTC()
+    private val clock: Clock = Clock.systemUTC(),
+    private val steamLookupCache: SteamLookupCache? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -432,9 +440,20 @@ class NintendoEshopClient(
         val regular = live?.regularPrice?.rawValue?.toDoubleOrNull()
             ?: doc.priceRegularF?.takeIf { it > 0.0 }
             ?: 0.0
-        val discounted = live?.discountPrice?.rawValue?.toDoubleOrNull()
-            ?: doc.priceDiscountedF?.takeIf { it > 0.0 }
-            ?: 0.0
+
+        val discounted: Double = if (live != null) {
+            val liveDiscount = live.discountPrice ?: return null
+            val endIso = liveDiscount.endDatetime
+            if (!endIso.isNullOrBlank()) {
+                val endInstant = runCatching { Instant.parse(endIso) }.getOrNull()
+                if (endInstant != null && endInstant.isBefore(now)) {
+                    return null
+                }
+            }
+            liveDiscount.rawValue?.toDoubleOrNull() ?: return null
+        } else {
+            doc.priceDiscountedF?.takeIf { it > 0.0 } ?: 0.0
+        }
 
         if (discounted <= 0.0) return null
 
@@ -457,7 +476,7 @@ class NintendoEshopClient(
 
         val imageUrl = resolveDocImageUrl(doc)
 
-        val publisher = doc.publisher?.trim().orEmpty().ifBlank { "Nintendo eShop" }
+        val publisher = doc.publisher?.trim().orEmpty()
         val releasedAtIso = doc.datesReleasedDts?.firstOrNull()
         val startsAtIso = live?.discountPrice?.startDatetime
         val effectivePopRank = minOf(
@@ -509,7 +528,7 @@ class NintendoEshopClient(
         deduped.filter { it.chartRank != null }.forEach { picked[it.id] = it }
         deduped.take(42).forEach { picked[it.id] = it }
         deduped.filter { deal ->
-            discountAgeDays(deal.startsAtIso, now) <= 7.5 &&
+            DealScorer.discountAgeDays(deal.startsAtIso, now) <= 7.5 &&
                 deal.discountPercent >= 35 &&
                 deal.regularPriceEur >= 10.0
         }.take(24).forEach { picked[it.id] = it }
@@ -536,32 +555,77 @@ class NintendoEshopClient(
     ): Map<String, SteamAcclaim> = coroutineScope {
         val semaphore = Semaphore(8)
         val uniqueTargets = titles
-            .filterNot { (_, pub) -> isNintendoFirstParty(pub) }
+            .filterNot { (_, pub) -> DealScorer.isNintendoFirstParty(pub) }
             .map { (title, _) -> DealTitleNormalizer.normalize(title) }
             .distinct()
 
         if (uniqueTargets.isEmpty()) return@coroutineScope emptyMap()
 
+        val nowMs = clock.millis()
+        val cachedEntries = runCatching {
+            steamLookupCache?.getCached(uniqueTargets, nowMs).orEmpty()
+        }.getOrDefault(emptyMap())
+
+        val result = HashMap<String, SteamAcclaim>(uniqueTargets.size)
+        cachedEntries.forEach { (norm, cached) ->
+            if (cached.found && cached.appId != null) {
+                result[norm] = SteamAcclaim(
+                    appId = cached.appId,
+                    reviewCount = cached.reviewCount,
+                    positivePercent = cached.positivePercent,
+                    tagIds = cached.tagIds,
+                    tagNames = cached.tagNames,
+                    developer = cached.developer,
+                    shortDescription = cached.shortDescription
+                )
+            }
+        }
+
+        val uncachedTargets = uniqueTargets.filter { it !in cachedEntries }
+        if (uncachedTargets.isEmpty()) return@coroutineScope result
+
         val tagMapDeferred = async(Dispatchers.IO) { ensureTagNamesLoaded() }
-        val appIdsByNormTitle = uniqueTargets.map { normTitle ->
+        val resolvedPairs = uncachedTargets.map { normTitle ->
             async(Dispatchers.IO) {
                 val appId = semaphore.withPermit { lookupSteamAppId(normTitle) }
                 normTitle to appId
             }
-        }.awaitAll().mapNotNull { (norm, appId) ->
-            appId?.let { norm to it }
-        }
+        }.awaitAll()
 
-        if (appIdsByNormTitle.isEmpty()) return@coroutineScope emptyMap()
-
+        val appIdsByNormTitle = resolvedPairs.mapNotNull { (norm, appId) -> appId?.let { norm to it } }
         val tagMap = tagMapDeferred.await()
         val uniqueAppIds = appIdsByNormTitle.map { it.second }.distinct()
-        val browseById = fetchSteamBrowseItemsBatch(uniqueAppIds, tagMap)
-
-        appIdsByNormTitle.associate { (normTitle, appId) ->
-            val enriched = (browseById[appId] ?: SteamAcclaim()).copy(appId = appId)
-            normTitle to enriched
+        val browseById = if (uniqueAppIds.isNotEmpty()) {
+            fetchSteamBrowseItemsBatch(uniqueAppIds, tagMap)
+        } else {
+            emptyMap()
         }
+
+        val toPersist = ArrayList<CachedSteamLookup>(resolvedPairs.size)
+        resolvedPairs.forEach { (normTitle, appId) ->
+            if (appId == null) {
+                toPersist.add(CachedSteamLookup(normTitle = normTitle, found = false, fetchedAtMs = nowMs))
+            } else {
+                val enriched = (browseById[appId] ?: SteamAcclaim()).copy(appId = appId)
+                result[normTitle] = enriched
+                toPersist.add(
+                    CachedSteamLookup(
+                        normTitle = normTitle,
+                        appId = appId,
+                        found = true,
+                        reviewCount = enriched.reviewCount,
+                        positivePercent = enriched.positivePercent,
+                        tagIds = enriched.tagIds,
+                        tagNames = enriched.tagNames,
+                        developer = enriched.developer,
+                        shortDescription = enriched.shortDescription,
+                        fetchedAtMs = nowMs
+                    )
+                )
+            }
+        }
+        runCatching { steamLookupCache?.save(toPersist) }
+        result
     }
 
     private fun lookupSteamAppId(normalizedTitle: String): Int? {
@@ -576,13 +640,7 @@ class NintendoEshopClient(
         }.getOrDefault(emptyList())
 
         return searchItems.firstOrNull { item ->
-            val rawName = item.name.orEmpty()
-            val lower = rawName.lowercase()
-            if (IGNORED_STEAM_SUFFIXES.any { lower.contains(it) }) return@firstOrNull false
-            val candidateNorm = DealTitleNormalizer.normalize(rawName)
-            candidateNorm == normalizedTitle ||
-                (normalizedTitle.length >= 6 &&
-                    (candidateNorm.startsWith("$normalizedTitle ") || normalizedTitle.startsWith("$candidateNorm ")))
+            DealTitleNormalizer.matchesSteamTitle(item.name.orEmpty(), normalizedTitle)
         }?.id
     }
 
@@ -667,24 +725,8 @@ class NintendoEshopClient(
         }
     }.getOrNull()
 
-    internal fun computePreScore(deal: Deal, sw2Rank: Int?, now: Instant): Double {
-        val ageDays = discountAgeDays(deal.startsAtIso, now)
-        val freshPts = freshnessScore(ageDays, maxFreshBoost = 30.0)
-        val chartPts = deal.chartRank?.let { ((50 - it).coerceAtLeast(1)) * 1.1 } ?: 0.0
-        val popPts = if (deal.popularityRank < 900) {
-            (22.0 - ln(1.0 + deal.popularityRank) * 3.2).coerceAtLeast(0.0)
-        } else {
-            0.0
-        }
-        val sw2Pts = sw2Rank?.let { (16.0 - ln(1.0 + it) * 2.8).coerceAtLeast(0.0) } ?: 0.0
-        val discPts = min(deal.discountPercent, 85) * 0.35 + if (deal.regularPriceEur >= 12.99) 6.0 else 0.0
-        val tierPts = when {
-            isNintendoFirstParty(deal.publisher) -> 20.0
-            isKnownMajorPublisher(deal.publisher) -> 12.0
-            else -> 0.0
-        }
-        return chartPts + popPts + sw2Pts + freshPts + discPts + tierPts
-    }
+    internal fun computePreScore(deal: Deal, sw2Rank: Int?, now: Instant): Double =
+        DealScorer.computePreScore(deal = deal, sw2Rank = sw2Rank, now = now)
 
     internal fun computeHotScore(
         deal: Deal,
@@ -692,62 +734,13 @@ class NintendoEshopClient(
         steamPositivePercent: Int?,
         wasShortlisted: Boolean,
         now: Instant
-    ): Double {
-        val isNintendo = isNintendoFirstParty(deal.publisher)
-        val isMajor = isKnownMajorPublisher(deal.publisher)
-        val acclaimPts = when {
-            isNintendo -> 34.0
-            steamReviewCount >= 300 -> {
-                val base = log10(steamReviewCount + 1.0) * 7.6
-                val sentimentAdj = when {
-                    steamPositivePercent != null && steamPositivePercent < 60 -> -12.0
-                    steamPositivePercent != null && steamPositivePercent >= 90 -> 4.0
-                    else -> 0.0
-                }
-                base + sentimentAdj
-            }
-            deal.chartRank != null -> 18.0
-            isMajor -> 10.0
-            wasShortlisted -> -12.0
-            else -> -14.0
-        }
-        val chartPts = deal.chartRank?.let { ((50 - it).coerceAtLeast(1)) * 0.65 } ?: 0.0
-        val popPts = if (deal.popularityRank < 900) {
-            (12.0 - ln(1.0 + deal.popularityRank) * 1.8).coerceAtLeast(0.0)
-        } else {
-            0.0
-        }
-        val freshPts = freshnessScore(discountAgeDays(deal.startsAtIso, now), maxFreshBoost = 32.0, baseRecentBonus = 4.0)
-        val discPts = min(deal.discountPercent, 85) * 0.34 + if (deal.regularPriceEur >= 14.0) 5.0 else 0.0
-        val releaseYear = deal.releasedAtIso?.take(4)?.toIntOrNull() ?: 2000
-        val currentYear = now.atZone(ZoneOffset.UTC).year
-        val recencyPts = when {
-            releaseYear >= currentYear - 1 -> 10.0
-            releaseYear >= currentYear - 2 -> 4.0
-            else -> 0.0
-        }
-
-        // Shift upward so legitimate scored items stay strictly > 0.0
-        return (acclaimPts + chartPts + popPts + freshPts + discPts + recencyPts + 25.0)
-            .coerceAtLeast(0.1)
-    }
-
-    private fun freshnessScore(
-        ageDays: Double,
-        maxFreshBoost: Double,
-        baseRecentBonus: Double = 0.0
-    ): Double = when {
-        ageDays <= 7.0 -> ((7.0 - ageDays) / 7.0) * maxFreshBoost + baseRecentBonus
-        ageDays <= 14.0 -> ((14.0 - ageDays) / 14.0) * 8.0
-        else -> -((ageDays - 14.0) * 1.2).coerceAtMost(18.0)
-    }
-
-    private fun discountAgeDays(startsAtIso: String?, now: Instant): Double {
-        if (startsAtIso.isNullOrBlank()) return 12.0
-        val start = runCatching { Instant.parse(startsAtIso) }.getOrNull() ?: return 12.0
-        val hours = Duration.between(start, now).toHours().coerceAtLeast(0)
-        return hours / 24.0
-    }
+    ): Double = DealScorer.computeHotScore(
+        deal = deal,
+        steamReviewCount = steamReviewCount,
+        steamPositivePercent = steamPositivePercent,
+        wasShortlisted = wasShortlisted,
+        now = now
+    )
 
     private fun resolveDocImageUrl(doc: SolrDoc): String? = listOf(
         doc.imageUrlH16x9S,
@@ -756,14 +749,6 @@ class NintendoEshopClient(
         doc.imageUrlSqS,
         doc.imageUrl
     ).firstOrNull { !it.isNullOrBlank() }?.trim()
-
-    private fun isNintendoFirstParty(publisher: String): Boolean =
-        publisher.lowercase().contains("nintendo")
-
-    private fun isKnownMajorPublisher(publisher: String): Boolean {
-        val lower = publisher.lowercase()
-        return KNOWN_MAJOR_PUBLISHERS.any { lower.contains(it) }
-    }
 
     private fun pickPrimaryNsuid(nsuids: List<String>?): String? {
         if (nsuids.isNullOrEmpty()) return null
@@ -791,18 +776,6 @@ class NintendoEshopClient(
         private const val BROWSER_USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36"
         private const val RECENT_WINDOW_DAYS = 730L
         private val RECENT_CUTOFF_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'00:00:00'Z'")
-        private val IGNORED_STEAM_SUFFIXES = listOf("soundtrack", " ost", "artbook", "demo")
-
-        private val KNOWN_MAJOR_PUBLISHERS = listOf(
-            "nintendo", "square enix", "capcom", "rockstar", "bandai namco", "sega", "atlus",
-            "devolver", "team17", "ubisoft", "bethesda", "2k", "konami", "koei tecmo",
-            "warner", "electronic arts", "ea ", "annapurna", "raw fury", "supergiant",
-            "team cherry", "klei", "fromsoftware", "cd projekt", "dotemu", "focus",
-            "thq nordic", "nis america", "spike chunsoft", "marvelous", "curve",
-            "chucklefish", "hooded horse", "aspyr", "nightdive", "coffee stain",
-            "humble", "milestone", "nacon", "atari", "abylight", "playdead",
-            "tinybuild", "kepler", "disney", "outright"
-        )
 
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(12, TimeUnit.SECONDS)

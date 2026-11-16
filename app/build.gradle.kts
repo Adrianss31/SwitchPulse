@@ -31,12 +31,18 @@ android {
 
   signingConfigs {
     val keystoreFile = file("keystore/switchpulse-release.jks")
-    if (keystoreFile.exists()) {
+    val ksPass = System.getenv("KEYSTORE_PASSWORD")
+      ?: (project.findProperty("KEYSTORE_PASSWORD") as? String)
+    val kAlias = System.getenv("KEY_ALIAS")
+      ?: (project.findProperty("KEY_ALIAS") as? String)
+    val kPass = System.getenv("KEY_PASSWORD")
+      ?: (project.findProperty("KEY_PASSWORD") as? String)
+    if (keystoreFile.exists() && !ksPass.isNullOrBlank() && !kAlias.isNullOrBlank() && !kPass.isNullOrBlank()) {
       create("release") {
         storeFile = keystoreFile
-        storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "switchpulse123"
-        keyAlias = System.getenv("KEY_ALIAS") ?: "switchpulse"
-        keyPassword = System.getenv("KEY_PASSWORD") ?: "switchpulse123"
+        storePassword = ksPass
+        keyAlias = kAlias
+        keyPassword = kPass
       }
     }
   }
@@ -46,8 +52,7 @@ android {
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      val releaseSigning = signingConfigs.findByName("release")
-      signingConfig = releaseSigning ?: signingConfigs.getByName("debug")
+      signingConfig = signingConfigs.findByName("release")
     }
     debug {
       applicationIdSuffix = ".debug"
@@ -115,4 +120,16 @@ dependencies {
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
   androidTestImplementation(libs.androidx.test.espresso.core)
+}
+
+gradle.taskGraph.whenReady {
+  val runningReleaseTask = allTasks.any { task ->
+    task.project == project && task.name.contains("Release", ignoreCase = false)
+  }
+  if (runningReleaseTask && android.signingConfigs.findByName("release") == null) {
+    throw GradleException(
+      "Release signing is not configured. Provide app/keystore/switchpulse-release.jks and " +
+        "KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD env vars or Gradle properties."
+    )
+  }
 }

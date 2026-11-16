@@ -116,7 +116,8 @@ class GeminiSoulClient(
         userTastePrompt: String = "",
         excludePreviousTitles: List<String> = emptyList(),
         desiredCount: Int = 7,
-        provider: AiProvider = AiProvider.GEMINI
+        provider: AiProvider = AiProvider.GEMINI,
+        dismissedTitles: List<String> = emptyList()
     ): Result<List<AiDiscoveryPick>> = withContext(Dispatchers.IO) {
         val cleanKey = apiKey.trim()
         val effectiveModel = modelId.trim().ifBlank { GeminiModels.defaultModelFor(provider, forSoul = true) }
@@ -125,11 +126,12 @@ class GeminiSoulClient(
         }
 
         val count = desiredCount.coerceIn(5, 10)
+        val combinedExcluded = (excludePreviousTitles + dismissedTitles).distinct()
         val prompt = buildDiscoveryPrompt(
             soulProfile = soulProfile,
             likedGames = likedGames,
             userTastePrompt = userTastePrompt.trim(),
-            excludePreviousTitles = excludePreviousTitles,
+            excludePreviousTitles = combinedExcluded,
             count = count
         )
         val rawResponse = when (
@@ -157,7 +159,8 @@ class GeminiSoulClient(
             return@withContext Result.failure(IllegalStateException("Formato consigli AI non valido"))
         }
 
-        val libraryNorms = likedGames.map { DealTitleNormalizer.normalize(it.title) }.toSet()
+        val dismissedNorms = dismissedTitles.map { DealTitleNormalizer.normalize(it) }.toSet()
+        val libraryNorms = likedGames.map { DealTitleNormalizer.normalize(it.title) }.toSet() + dismissedNorms
         val previousNorms = excludePreviousTitles.map { DealTitleNormalizer.normalize(it) }.toSet()
 
         val cleaned = parsedList

@@ -174,4 +174,19 @@ class DealFilterEngineTest {
         assertEquals(listOf("match"), visibleTop.map { it.id })
         assertEquals(listOf("match"), candidates.map { it.id })
     }
+
+    @Test
+    fun `filterAllEligible keeps all eligible deals beyond Top 30 cap for global search`() {
+        val raw = (1..45).map { idx ->
+            sampleDeal(idx.toString(), Platform.SWITCH_1, 39.99, 14.99, 63, idx, hotScore = 100.0 - idx)
+        }
+        val settings = FilterSettings(minDiscountPercent = 30, minRegularPriceEur = 10f)
+
+        val top30 = DealFilterEngine.filterTopTen(raw, settings, PlatformFilter.ALL, limit = 30)
+        val allEligible = DealFilterEngine.filterAllEligible(raw, settings, PlatformFilter.ALL)
+
+        assertEquals(30, top30.size)
+        assertEquals(45, allEligible.size)
+        assertEquals("45", allEligible.last().id)
+    }
 }

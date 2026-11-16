@@ -53,6 +53,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -82,6 +83,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import com.switchpulse.app.data.DealFilterEngine
 import com.switchpulse.app.data.RecommendationEngine
 import com.switchpulse.app.data.TasteGenreBar
 import com.switchpulse.app.data.model.DealTitleNormalizer
@@ -114,6 +116,7 @@ fun LibraryScreen(
     onSetGameRating: (LikedGame, Int?) -> Unit,
     onSetGameOwned: (LikedGame, Boolean) -> Unit,
     onSetGameNote: (LikedGame, String?) -> Unit = { _, _ -> },
+    onSetGameTargetPrice: (LikedGame, Double?) -> Unit = { _, _ -> },
     onRemoveGame: (String) -> Unit,
     onOpenEshop: (String) -> Unit,
     onGenerateGamerSoul: () -> Unit = {},
@@ -213,6 +216,7 @@ fun LibraryScreen(
                     onSetRating = { nextRating -> onSetGameRating(item, nextRating) },
                     onToggleOwned = { onSetGameOwned(item, !item.isOwned) },
                     onSetNote = { nextNote -> onSetGameNote(item, nextNote) },
+                    onSetTargetPrice = { target -> onSetGameTargetPrice(item, target) },
                     onRemove = {
                         if (expandedGameId == item.id) expandedGameId = null
                         onRemoveGame(item.id)
@@ -789,6 +793,7 @@ private fun LibraryMatrixRow(
     onSetRating: (Int?) -> Unit,
     onToggleOwned: () -> Unit,
     onSetNote: (String?) -> Unit,
+    onSetTargetPrice: (Double?) -> Unit,
     onRemove: () -> Unit,
     onOpenEshop: (() -> Unit)?
 ) {
@@ -868,6 +873,8 @@ private fun LibraryMatrixRow(
                 val statusSuffix = when {
                     game.isNegativeRating -> "Sconsigliato all'IA"
                     game.isOwned && game.rating == null -> "Da giocare"
+                    !game.isOwned && game.targetPriceEur != null ->
+                        "Avviso < ${DealFilterEngine.formatEur(game.targetPriceEur)}"
                     else -> null
                 }
 
@@ -1091,6 +1098,27 @@ private fun LibraryMatrixRow(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                if (!game.isOwned) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val currentTarget = game.targetPriceEur
+                        listOf(null to "Nessun avviso", 20.0 to "< 20 €", 15.0 to "< 15 €", 10.0 to "< 10 €", 5.0 to "< 5 €").forEach { (preset, label) ->
+                            val selected = if (preset == null) {
+                                currentTarget == null
+                            } else {
+                                currentTarget != null && kotlin.math.abs(currentTarget - preset) < 0.05
+                            }
+                            FilterChip(
+                                selected = selected,
+                                onClick = { onSetTargetPrice(preset) },
+                                label = { Text(label, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
             }
         }
     }
