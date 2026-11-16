@@ -49,6 +49,13 @@ enum class DealMatchSentiment {
 }
 
 @Serializable
+enum class FeedSortMode(val label: String) {
+    PERSONAL("Per te"),
+    DISCOUNT("Sconto"),
+    PRICE_ASC("Prezzo")
+}
+
+@Serializable
 data class Deal(
     val id: String,
     val nsuid: String?,
@@ -83,7 +90,8 @@ data class Deal(
     val matchSource: DealMatchSource = DealMatchSource.NONE,
     val matchSentiment: DealMatchSentiment = DealMatchSentiment.NONE,
     val lowestSeenPriceEur: Double? = null,
-    val isHistoricalLow: Boolean = false
+    val isHistoricalLow: Boolean = false,
+    val previousDiscountedPriceEur: Double? = null
 ) {
     val displayPublisher: String get() = publisher.ifBlank { "Nintendo eShop" }
 
@@ -300,6 +308,9 @@ data class FilterSettings(
     val minRegularPriceEur: Float = 10f,
     val appPlatformFilter: PlatformFilter = PlatformFilter.ALL,
     val widgetPlatformFilter: PlatformFilter = PlatformFilter.ALL,
+    val feedSortMode: FeedSortMode = FeedSortMode.PERSONAL,
+    val expiringSoonOnly: Boolean = false,
+    val previousFeedOrder: List<String> = emptyList(),
     val syncIntervalHours: Int = 12,
     val backgroundRerankPolicy: BackgroundRerankPolicy = BackgroundRerankPolicy.WIFI_ONLY,
     val blacklistIds: Set<String> = emptySet(),
@@ -345,4 +356,12 @@ data class FilterSettings(
         AiProvider.OPENROUTER -> availableOpenRouterModels
         AiProvider.DEEPSEEK -> availableDeepSeekModels
     }
+
+    fun hasNonDefaultFilters(): Boolean =
+        minDiscountPercent != 30 ||
+            minRegularPriceEur != 10f ||
+            recommendationWeight != 50 ||
+            forYouOnlyMode ||
+            expiringSoonOnly ||
+            feedSortMode != FeedSortMode.PERSONAL
 }

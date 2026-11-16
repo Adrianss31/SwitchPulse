@@ -11,40 +11,45 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.core.content.ContextCompat
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CollectionsBookmark
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Star
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.Leaderboard
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,18 +61,27 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.switchpulse.app.data.model.DealTitleNormalizer
-import com.switchpulse.app.ui.AiDiscoverySheet
+import com.switchpulse.app.ui.AddGameSheet
 import com.switchpulse.app.ui.FeedScreen
-import com.switchpulse.app.ui.GameDetailSheet
+import com.switchpulse.app.ui.FiltersBottomSheet
+import com.switchpulse.app.ui.GameDetailScreen
+import com.switchpulse.app.ui.HiddenDealsScreen
 import com.switchpulse.app.ui.LibraryScreen
 import com.switchpulse.app.ui.MainViewModel
+import com.switchpulse.app.ui.PerTeScreen
 import com.switchpulse.app.ui.SettingsScreen
-import com.switchpulse.app.ui.theme.EshopCrimson
+import com.switchpulse.app.ui.components.SpSnackbarHost
+import com.switchpulse.app.ui.motion.LocalReduceMotion
+import com.switchpulse.app.ui.motion.Motion
+import com.switchpulse.app.ui.theme.SpTheme
+import com.switchpulse.app.ui.theme.SpType
 import com.switchpulse.app.ui.theme.SwitchPulseTheme
 import com.switchpulse.app.worker.DealsSyncWorker
 import kotlinx.coroutines.launch
@@ -99,7 +113,7 @@ class MainActivity : ComponentActivity() {
             SwitchPulseTheme {
                 SwitchPulseRoot(
                     viewModel = viewModel,
-                    initialTab = if (openUpdatesInitially) 2 else 0,
+                    initialSettingsOpen = openUpdatesInitially,
                     pendingIntent = pendingIntentState,
                     onIntentConsumed = { pendingIntentState = null },
                     onOpenUrl = { url ->
@@ -123,29 +137,42 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun SwitchPulseRoot(
     viewModel: MainViewModel,
-    initialTab: Int,
+    initialSettingsOpen: Boolean,
     pendingIntent: Intent?,
     onIntentConsumed: () -> Unit,
     onOpenUrl: (String) -> Unit
 ) {
+    val c = SpTheme.colors
+    val reduceMotion = LocalReduceMotion.current
+    val density = LocalDensity.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var selectedTab by rememberSaveable { mutableIntStateOf(initialTab) }
-    var showAddGameSheet by remember { mutableStateOf(false) }
+
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var showSettings by rememberSaveable { mutableStateOf(initialSettingsOpen) }
+    var showHiddenDeals by rememberSaveable { mutableStateOf(false) }
+    var showFiltersSheet by rememberSaveable { mutableStateOf(false) }
+    var showAddGameSheet by rememberSaveable { mutableStateOf(false) }
+
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    val undoLabel = stringResource(R.string.action_undo)
 
     LaunchedEffect(pendingIntent) {
         val current = pendingIntent ?: return@LaunchedEffect
         if (current.getBooleanExtra(DealsSyncWorker.EXTRA_OPEN_UPDATES, false)) {
             selectedTab = 2
+            showSettings = true
         }
         val dealId = current.getStringExtra(MainActivity.EXTRA_OPEN_DEAL_ID)?.takeIf { it.isNotBlank() }
         if (dealId != null) {
             selectedTab = 0
+            showSettings = false
+            showHiddenDeals = false
             viewModel.openDealById(dealId)
         }
         onIntentConsumed()
@@ -159,238 +186,340 @@ private fun SwitchPulseRoot(
         }
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
-                ),
-                title = {
-                    Column {
-                        Text(
-                            text = when (selectedTab) {
-                                0 -> "Offerte Top 30"
-                                1 -> "La tua Libreria"
-                                else -> "Filtri & Aggiornamenti"
-                            },
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(c.paper),
+        contentAlignment = Alignment.TopCenter
+    ) {
+        SharedTransitionLayout(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 600.dp)
+        ) {
+            val sharedScope = this
+            Box(modifier = Modifier.fillMaxSize()) {
+                Scaffold(
+                    modifier = Modifier.fillMaxSize(),
+                    containerColor = c.paper,
+                    contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                    snackbarHost = { SpSnackbarHost(hostState = snackbarHostState) },
+                    bottomBar = {
+                        EditorialBottomBar(
+                            selectedTab = selectedTab,
+                            onSelectTab = { next ->
+                                if (next != selectedTab) {
+                                    viewModel.clearRankDeltas()
+                                    selectedTab = next
+                                }
+                            }
                         )
-                        if (selectedTab != 1) {
-                            Text(
-                                text = "Nintendo eShop Italia · Switch & Switch 2",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                ) { innerPadding ->
+                    val tabSlidePx = with(density) { 8.dp.roundToPx() }
+                    AnimatedContent(
+                        targetState = selectedTab,
+                        transitionSpec = {
+                            if (reduceMotion) {
+                                fadeIn(Motion.quick(true)) togetherWith fadeOut(Motion.quick(true))
+                            } else {
+                                (fadeIn(androidx.compose.animation.core.tween(200, easing = Motion.Out)) +
+                                    slideInVertically(androidx.compose.animation.core.tween(200, easing = Motion.Out)) { tabSlidePx })
+                                    .togetherWith(fadeOut(androidx.compose.animation.core.tween(120)))
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = innerPadding.calculateBottomPadding()),
+                        label = "root_tabs"
+                    ) { tab ->
+                        when (tab) {
+                            0 -> FeedScreen(
+                                state = state,
+                                sharedTransitionScope = sharedScope,
+                                animatedVisibilityScope = this@AnimatedContent,
+                                onSelectPlatform = viewModel::setAppPlatformFilter,
+                                onOpenFilters = { showFiltersSheet = true },
+                                onOpenDealDetail = { deal, rank ->
+                                    viewModel.openDealDetail(deal, rank, "cover-${deal.id}")
+                                },
+                                onSwipeHideDeal = { deal ->
+                                    viewModel.hideDeal(deal)
+                                    scope.launch {
+                                        snackbarHostState.currentSnackbarData?.dismiss()
+                                        val res = snackbarHostState.showSnackbar(
+                                            message = "“${deal.title}” nascosto",
+                                            actionLabel = undoLabel,
+                                            duration = SnackbarDuration.Short
+                                        )
+                                        if (res == SnackbarResult.ActionPerformed) {
+                                            viewModel.unhideDeal(deal.id)
+                                        }
+                                    }
+                                },
+                                onSwipeOwnedDeal = { deal ->
+                                    viewModel.setGameOwned(deal.toLikedGame(), true)
+                                    scope.launch {
+                                        snackbarHostState.currentSnackbarData?.dismiss()
+                                        val res = snackbarHostState.showSnackbar(
+                                            message = "“${deal.title}” è nei tuoi giochi",
+                                            actionLabel = undoLabel,
+                                            duration = SnackbarDuration.Short
+                                        )
+                                        if (res == SnackbarResult.ActionPerformed) {
+                                            viewModel.setGameOwned(deal.toLikedGame(), false)
+                                        }
+                                    }
+                                },
+                                onQuickRateDeal = { deal, stars ->
+                                    viewModel.setGameRating(deal.toLikedGame(), stars)
+                                },
+                                onRefresh = viewModel::refreshDeals,
+                                onResetFilters = viewModel::resetFilters,
+                                onRerankMissingDeals = viewModel::rerankMissingVisibleDeals,
+                                onRerankAllNow = viewModel::rerankWithGeminiNow,
+                                onOpenUpdateSettings = { showSettings = true }
+                            )
+
+                            1 -> PerTeScreen(
+                                state = state,
+                                sharedTransitionScope = sharedScope,
+                                animatedVisibilityScope = this@AnimatedContent,
+                                onGenerateSoul = viewModel::generateGamerSoul,
+                                onSaveUserTastePrompt = viewModel::setUserTastePrompt,
+                                onRefreshDiscoveryPicks = { viewModel.discoverGamesForSoul(freshBatch = true) },
+                                onOpenDiscoveryDetail = viewModel::openDiscoveryDetail,
+                                onOpenSettings = { showSettings = true },
+                                onOpenAddGame = { showAddGameSheet = true }
+                            )
+
+                            else -> LibraryScreen(
+                                state = state,
+                                sharedTransitionScope = sharedScope,
+                                animatedVisibilityScope = this@AnimatedContent,
+                                onOpenSettings = { showSettings = true },
+                                onOpenAddGameSheet = { showAddGameSheet = true },
+                                onOpenLibraryDetail = viewModel::openLibraryDetail,
+                                onSwipeRemoveGame = { game ->
+                                    viewModel.removeLikedGame(game.id)
+                                    scope.launch {
+                                        snackbarHostState.currentSnackbarData?.dismiss()
+                                        val res = snackbarHostState.showSnackbar(
+                                            message = "“${game.title}” rimosso",
+                                            actionLabel = undoLabel,
+                                            duration = SnackbarDuration.Short
+                                        )
+                                        if (res == SnackbarResult.ActionPerformed) {
+                                            viewModel.setGameOwned(game, game.isOwned)
+                                            if (game.rating != null) viewModel.setGameRating(game, game.rating)
+                                            if (!game.userNote.isNullOrBlank()) viewModel.setGameNote(game, game.userNote)
+                                        }
+                                    }
+                                }
                             )
                         }
                     }
-                },
-                actions = {
-                    when (selectedTab) {
-                        0 -> {
-                            IconButton(
-                                onClick = { viewModel.refreshDeals() },
-                                enabled = !state.isRefreshing
-                            ) {
-                                if (state.isRefreshing) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(18.dp),
-                                        strokeWidth = 2.dp,
-                                        color = EshopCrimson
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Refresh,
-                                        contentDescription = "Aggiorna offerte"
-                                    )
-                                }
-                            }
-                        }
+                }
 
-                        1 -> {
-                            Button(
-                                onClick = { showAddGameSheet = true },
-                                shape = RoundedCornerShape(999.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = EshopCrimson,
-                                    contentColor = Color.White
-                                ),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                                modifier = Modifier
-                                    .padding(end = 12.dp)
-                                    .height(38.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Add,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(5.dp))
-                                Text(
-                                    text = "Aggiungi",
-                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
-                                )
-                            }
+                // Settings full-screen push overlay
+                AnimatedVisibility(
+                    visible = showSettings,
+                    enter = if (reduceMotion) fadeIn(Motion.quick(true)) else slideInHorizontally(Motion.standard()) { it / 3 } + fadeIn(Motion.standard()),
+                    exit = if (reduceMotion) fadeOut(Motion.quick(true)) else slideOutHorizontally(Motion.exit()) { it / 3 } + fadeOut(Motion.exit())
+                ) {
+                    SettingsScreen(
+                        state = state,
+                        onBack = { showSettings = false },
+                        onSaveProviderApiKey = viewModel::setProviderApiKey,
+                        onTestProviderConnection = { prov, pending -> viewModel.testProviderConnection(prov, pending) },
+                        onSelectRerankTarget = viewModel::setRerankTarget,
+                        onSelectInsightsTarget = viewModel::setInsightsTarget,
+                        onSelectSoulTarget = viewModel::setSoulTarget,
+                        onRefreshModels = { prov -> viewModel.refreshAvailableModels(prov, silent = false) },
+                        onRerankWithGeminiNow = viewModel::rerankWithGeminiNow,
+                        onBackgroundRerankPolicyChange = viewModel::setBackgroundRerankPolicy,
+                        onWidgetPlatformFilterChange = viewModel::setWidgetPlatformFilter,
+                        onSyncIntervalChange = viewModel::setSyncInterval,
+                        onAutoCheckUpdatesChange = viewModel::setAutoCheckUpdates,
+                        onCheckUpdates = { viewModel.checkForUpdates(silentIfUpToDate = false) },
+                        onDownloadAndInstall = viewModel::downloadAndInstall,
+                        onInstallDownloaded = viewModel::installDownloaded,
+                        onSaveGithubRepo = viewModel::setGithubRepo,
+                        onExportBackupJson = viewModel::exportBackupJson,
+                        onImportBackupJson = viewModel::importBackupJson,
+                        onFeedback = viewModel::showStatusMessage
+                    )
+                }
+
+                // Hidden games full-screen push overlay
+                AnimatedVisibility(
+                    visible = showHiddenDeals,
+                    enter = if (reduceMotion) fadeIn(Motion.quick(true)) else slideInHorizontally(Motion.standard()) { it / 3 } + fadeIn(Motion.standard()),
+                    exit = if (reduceMotion) fadeOut(Motion.quick(true)) else slideOutHorizontally(Motion.exit()) { it / 3 } + fadeOut(Motion.exit())
+                ) {
+                    HiddenDealsScreen(
+                        blacklistIds = state.settings.blacklistIds,
+                        blacklistTitles = state.settings.blacklistTitles,
+                        rawCachedDeals = state.rawCachedDeals,
+                        onUnhideDeal = viewModel::unhideDeal,
+                        onBack = { showHiddenDeals = false }
+                    )
+                }
+
+                // Full-screen Game Detail Screen with Shared Element cover transition
+                AnimatedVisibility(
+                    visible = state.selectedDetail != null,
+                    enter = fadeIn(Motion.emphasized(reduceMotion)),
+                    exit = fadeOut(androidx.compose.animation.core.tween(if (reduceMotion) 120 else 300, easing = Motion.Away))
+                ) {
+                    val activeDetail = state.selectedDetail
+                    if (activeDetail != null) {
+                        val existingEntry = state.settings.likedGames.firstOrNull {
+                            it.id == activeDetail.id ||
+                                com.switchpulse.app.data.model.DealTitleNormalizer.normalize(it.title) == activeDetail.normalizedTitle
                         }
+                        val targetLiked = activeDetail.toLikedGame(existingEntry)
+                        GameDetailScreen(
+                            detail = activeDetail,
+                            settings = state.settings,
+                            insights = state.detailInsights,
+                            isLoadingInsights = state.isLoadingInsights,
+                            libraryEntry = existingEntry,
+                            sharedTransitionScope = sharedScope,
+                            animatedVisibilityScope = this@AnimatedVisibility,
+                            onDismiss = viewModel::closeDealDetail,
+                            onOpenEshop = onOpenUrl,
+                            onSetRating = { rating -> viewModel.setGameRating(targetLiked, rating) },
+                            onSetOwned = { owned -> viewModel.setGameOwned(targetLiked, owned) },
+                            onSetNote = { note -> viewModel.setGameNote(targetLiked, note) },
+                            onSetTargetPrice = { target -> viewModel.setGameTargetPrice(targetLiked, target) },
+                            onHideDeal = {
+                                activeDetail.sourceDeal?.let(viewModel::hideDeal)
+                            },
+                            onDismissPick = viewModel::dismissDiscoveryPick,
+                            onRemoveLibrary = viewModel::removeLikedGame,
+                            onRefreshInsights = viewModel::refreshSelectedDetailInsights
+                        )
                     }
                 }
-            )
-        },
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface
-            ) {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Rounded.Star, contentDescription = null) },
-                    label = { Text("Classifica") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Rounded.CollectionsBookmark, contentDescription = null) },
-                    label = { Text("Libreria") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 2,
-                    onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Rounded.Tune, contentDescription = null) },
-                    label = { Text("Filtri & Update") }
-                )
             }
         }
-    ) { innerPadding ->
-        when (selectedTab) {
-            0 -> FeedScreen(
-                state = state,
-                onSelectPlatform = viewModel::setAppPlatformFilter,
-                onOpenDealDetail = viewModel::openDealDetail,
-                onHideDeal = { deal ->
-                    viewModel.hideDeal(deal)
-                    scope.launch {
-                        val res = snackbarHostState.showSnackbar(
-                            message = "\"${deal.title}\" nascosto",
-                            actionLabel = "Annulla",
-                            duration = SnackbarDuration.Short
-                        )
-                        if (res == SnackbarResult.ActionPerformed) {
-                            viewModel.unhideDeal(deal.id)
-                        }
-                    }
-                },
-                onToggleForYou = viewModel::setForYouOnlyMode,
-                onRefresh = viewModel::refreshDeals,
-                onResetFilters = viewModel::resetFilters,
-                onOpenUpdateTab = { selectedTab = 2 },
-                onRerankMissingDeals = viewModel::rerankMissingVisibleDeals,
-                onRerankAllNow = viewModel::rerankWithGeminiNow,
-                modifier = Modifier.padding(innerPadding)
-            )
+    }
 
-            1 -> LibraryScreen(
-                state = state,
-                showAddGameSheet = showAddGameSheet,
-                onOpenAddGameSheet = { showAddGameSheet = true },
-                onDismissAddGameSheet = {
-                    showAddGameSheet = false
-                    viewModel.clearProfileSearchResults()
-                },
-                onSearchGames = viewModel::searchProfileGames,
-                onClearSearchResults = viewModel::clearProfileSearchResults,
-                onSetGameRating = viewModel::setGameRating,
-                onSetGameOwned = viewModel::setGameOwned,
-                onSetGameNote = viewModel::setGameNote,
-                onSetGameTargetPrice = viewModel::setGameTargetPrice,
-                onRemoveGame = viewModel::removeLikedGame,
-                onOpenEshop = onOpenUrl,
-                onGenerateGamerSoul = viewModel::generateGamerSoul,
-                onOpenDiscoverySheet = viewModel::openDiscoverySheet,
-                onRefreshDiscoveryPicks = { viewModel.discoverGamesForSoul(freshBatch = true) },
-                modifier = Modifier.padding(innerPadding)
-            )
-
-            else -> SettingsScreen(
-                state = state,
-                onMinDiscountChange = viewModel::setMinDiscount,
-                onMinRegularPriceChange = viewModel::setMinRegularPrice,
-                onSyncIntervalChange = viewModel::setSyncInterval,
-                onUnhideDeal = viewModel::unhideDeal,
-                onSaveGithubRepo = viewModel::setGithubRepo,
-                onAutoCheckUpdatesChange = viewModel::setAutoCheckUpdates,
-                onCheckUpdates = { viewModel.checkForUpdates(silentIfUpToDate = false) },
-                onDownloadAndInstall = viewModel::downloadAndInstall,
-                onInstallDownloaded = viewModel::installDownloaded,
-                onWidgetPinFeedback = { msg ->
-                    scope.launch { snackbarHostState.showSnackbar(msg) }
-                },
-                onRecommendationWeightChange = viewModel::setRecommendationWeight,
-                onSaveProviderApiKey = viewModel::setProviderApiKey,
-                onSelectRerankTarget = viewModel::setRerankTarget,
-                onSelectInsightsTarget = viewModel::setInsightsTarget,
-                onSelectSoulTarget = viewModel::setSoulTarget,
-                onRefreshModels = { provider -> viewModel.refreshAvailableModels(provider = provider, silent = false) },
-                onTestProviderConnection = { provider, pending -> viewModel.testProviderConnection(provider, pending) },
-                onRerankWithGeminiNow = viewModel::rerankWithGeminiNow,
-                onSaveUserTastePrompt = viewModel::setUserTastePrompt,
-                onBackgroundRerankPolicyChange = viewModel::setBackgroundRerankPolicy,
-                onExportBackupJson = viewModel::exportBackupJson,
-                onImportBackupJson = viewModel::importBackupJson,
-                onBackupFeedback = viewModel::showStatusMessage,
-                onOpenLibraryTab = { selectedTab = 1 },
-                modifier = Modifier.padding(innerPadding)
-            )
-        }
-
-        val activeDeal = state.selectedDeal
-        if (activeDeal != null) {
-            val activeNorm = DealTitleNormalizer.normalize(activeDeal.title)
-            val existingEntry = state.settings.likedGames.firstOrNull {
-                it.id == activeDeal.id || DealTitleNormalizer.normalize(it.title) == activeNorm
+    if (showFiltersSheet) {
+        FiltersBottomSheet(
+            settings = state.settings,
+            rawCachedDeals = state.rawCachedDeals,
+            onDismiss = { showFiltersSheet = false },
+            onResetFilters = viewModel::resetFilters,
+            onSelectSortMode = viewModel::setFeedSortMode,
+            onToggleForYouOnly = viewModel::setForYouOnlyMode,
+            onToggleExpiringSoonOnly = viewModel::setExpiringSoonOnly,
+            onChangeMinDiscount = viewModel::setMinDiscount,
+            onChangeMinRegularPrice = viewModel::setMinRegularPrice,
+            onChangeRecommendationWeight = viewModel::setRecommendationWeight,
+            onOpenHiddenGames = {
+                showFiltersSheet = false
+                showHiddenDeals = true
             }
-            GameDetailSheet(
-                deal = activeDeal,
-                settings = state.settings,
-                insights = state.detailInsights,
-                isLoadingInsights = state.isLoadingInsights,
-                libraryEntry = existingEntry,
-                onDismiss = viewModel::closeDealDetail,
-                onOpenEshop = onOpenUrl,
-                onSetRating = { rating ->
-                    viewModel.setGameRating(existingEntry ?: activeDeal.toLikedGame(), rating)
-                },
-                onSetOwned = { owned ->
-                    viewModel.setGameOwned(existingEntry ?: activeDeal.toLikedGame(), owned)
-                    if (owned) {
-                        viewModel.closeDealDetail()
-                    }
-                },
-                onSetNote = { note ->
-                    viewModel.setGameNote(existingEntry ?: activeDeal.toLikedGame(), note)
-                },
-                onSetTargetPrice = { target ->
-                    viewModel.setGameTargetPrice(existingEntry ?: activeDeal.toLikedGame(), target)
-                },
-                onHideDeal = { viewModel.hideDeal(activeDeal) },
-                onRefreshInsights = { viewModel.refreshDealInsights(activeDeal) }
-            )
-        }
+        )
+    }
 
-        if (state.showDiscoverySheet) {
-            AiDiscoverySheet(
-                soulProfile = state.settings.gamerSoulProfile,
-                picks = state.settings.discoveryPicks,
-                library = state.settings.likedGames,
-                isLoading = state.isDiscoveringGames,
-                onDismiss = viewModel::dismissDiscoverySheet,
-                onRefreshPicks = { viewModel.discoverGamesForSoul(freshBatch = true) },
-                onOpenEshop = onOpenUrl,
-                onToggleOwned = viewModel::setGameOwned,
-                onQuickRate = { game, stars -> viewModel.setGameRating(game, stars) },
-                onDismissPick = viewModel::dismissDiscoveryPick
+    if (showAddGameSheet) {
+        AddGameSheet(
+            state = state,
+            onDismiss = {
+                showAddGameSheet = false
+                viewModel.clearProfileSearchResults()
+            },
+            onSearchGames = viewModel::searchProfileGames,
+            onClearSearchResults = viewModel::clearProfileSearchResults,
+            onSaveGameToLibrary = { game, rating, owned, note ->
+                viewModel.setGameOwned(game, owned)
+                if (rating != null) viewModel.setGameRating(game, rating)
+                if (note != null) viewModel.setGameNote(game, note)
+            }
+        )
+    }
+}
+
+@Composable
+private fun EditorialBottomBar(
+    selectedTab: Int,
+    onSelectTab: (Int) -> Unit
+) {
+    val c = SpTheme.colors
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(c.paper)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+    ) {
+        HorizontalDivider(thickness = 1.dp, color = c.line)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(68.dp)
+        ) {
+            BottomNavTabItem(
+                icon = Icons.Rounded.Leaderboard,
+                label = stringResource(R.string.nav_ranking),
+                selected = selectedTab == 0,
+                onClick = { onSelectTab(0) },
+                modifier = Modifier.weight(1f)
+            )
+            BottomNavTabItem(
+                icon = Icons.Rounded.Explore,
+                label = stringResource(R.string.nav_for_you),
+                selected = selectedTab == 1,
+                onClick = { onSelectTab(1) },
+                modifier = Modifier.weight(1f)
+            )
+            BottomNavTabItem(
+                icon = Icons.Rounded.CollectionsBookmark,
+                label = stringResource(R.string.nav_library),
+                selected = selectedTab == 2,
+                onClick = { onSelectTab(2) },
+                modifier = Modifier.weight(1f)
             )
         }
+    }
+}
+
+@Composable
+private fun BottomNavTabItem(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val c = SpTheme.colors
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = if (selected) c.ink else c.faint,
+            modifier = Modifier.size(22.dp)
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = label,
+            style = SpType.navLabel.copy(
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+            ),
+            color = if (selected) c.ink else c.faint,
+            maxLines = 1
+        )
     }
 }

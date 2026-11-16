@@ -29,15 +29,27 @@
         </activity>
 
         <receiver
-            android:name=".widget.EditorialBentoWidgetReceiver"
+            android:name=".widget.TopCoverWidgetReceiver"
             android:exported="true"
-            android:label="Top 10 eShop (Editorial Bento)">
+            android:label="@string/widget_w1_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/deal_widget_info" />
+                android:resource="@xml/widget_top_cover_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.CarouselWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_w12_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_carousel_info" />
         </receiver>
 
         <provider

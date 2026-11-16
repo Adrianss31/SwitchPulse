@@ -4,57 +4,50 @@ import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.AddToHomeScreen
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -66,20 +59,33 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.switchpulse.app.BuildConfig
+import com.switchpulse.app.R
 import com.switchpulse.app.data.model.AiProvider
 import com.switchpulse.app.data.model.AiTaskTarget
 import com.switchpulse.app.data.model.BackgroundRerankPolicy
+import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GeminiModelInfo
+import com.switchpulse.app.data.model.PlatformFilter
 import com.switchpulse.app.data.remote.GeminiModels
-import com.switchpulse.app.ui.theme.EshopCrimson
+import com.switchpulse.app.ui.components.PrimaryButton
+import com.switchpulse.app.ui.components.SecondaryButton
+import com.switchpulse.app.ui.components.SectionLabel
+import com.switchpulse.app.ui.components.SegmentedChoice
+import com.switchpulse.app.ui.components.SettingsRow
+import com.switchpulse.app.ui.components.SpSwitch
+import com.switchpulse.app.ui.theme.SpTheme
+import com.switchpulse.app.ui.theme.SpType
 import com.switchpulse.app.update.ReleaseInfo
-import com.switchpulse.app.widget.EditorialBentoWidgetReceiver
+import com.switchpulse.app.widget.CarouselWidgetReceiver
+import com.switchpulse.app.widget.TopCoverWidgetReceiver
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -92,18 +98,18 @@ private enum class AiTaskSlot(
     val recommendedId: String
 ) {
     RERANK(
-        title = "Classifica offerte (Rerank AI)",
+        title = "Classifica offerte",
         subtitle = "Analisi brevi top 40 offerte",
         recommendedId = GeminiModels.FLASH_LITE
     ),
     INSIGHTS(
         title = "Schede dettaglio gioco",
-        subtitle = "Metacritic, HLTB & verdetto singolo",
+        subtitle = "Metacritic, durata & verdetto",
         recommendedId = GeminiModels.FLASH_LITE
     ),
     SOUL(
         title = "Anima & Consigli su misura",
-        subtitle = "Profilo giocatore e 5–10 titoli consigliati",
+        subtitle = "Profilo giocatore e scoperte",
         recommendedId = GeminiModels.HYDROGEN
     )
 }
@@ -111,33 +117,40 @@ private enum class AiTaskSlot(
 @Composable
 fun SettingsScreen(
     state: MainUiState,
-    onMinDiscountChange: (Int) -> Unit,
-    onMinRegularPriceChange: (Float) -> Unit,
-    onSyncIntervalChange: (Int) -> Unit,
-    onUnhideDeal: (String) -> Unit,
-    onSaveGithubRepo: (String) -> Unit,
-    onAutoCheckUpdatesChange: (Boolean) -> Unit,
-    onCheckUpdates: () -> Unit,
-    onDownloadAndInstall: (ReleaseInfo) -> Unit,
-    onInstallDownloaded: (ReleaseInfo, File) -> Unit,
-    onWidgetPinFeedback: (String) -> Unit,
-    onRecommendationWeightChange: (Int) -> Unit,
+    onBack: () -> Unit,
     onSaveProviderApiKey: (AiProvider, String) -> Unit,
+    onTestProviderConnection: (AiProvider, String) -> Unit,
     onSelectRerankTarget: (AiProvider, String) -> Unit,
     onSelectInsightsTarget: (AiProvider, String) -> Unit,
     onSelectSoulTarget: (AiProvider, String) -> Unit,
     onRefreshModels: (AiProvider?) -> Unit,
-    onTestProviderConnection: (AiProvider, String) -> Unit,
     onRerankWithGeminiNow: () -> Unit,
-    onSaveUserTastePrompt: (String) -> Unit = {},
-    onBackgroundRerankPolicyChange: (BackgroundRerankPolicy) -> Unit = {},
-    onExportBackupJson: () -> String = { "" },
-    onImportBackupJson: (String) -> Unit = {},
-    onBackupFeedback: (String) -> Unit = {},
-    onOpenLibraryTab: () -> Unit,
+    onBackgroundRerankPolicyChange: (BackgroundRerankPolicy) -> Unit,
+    onWidgetPlatformFilterChange: (PlatformFilter) -> Unit,
+    onSyncIntervalChange: (Int) -> Unit,
+    onAutoCheckUpdatesChange: (Boolean) -> Unit,
+    onCheckUpdates: () -> Unit,
+    onDownloadAndInstall: (ReleaseInfo) -> Unit,
+    onInstallDownloaded: (ReleaseInfo, File) -> Unit,
+    onSaveGithubRepo: (String) -> Unit,
+    onExportBackupJson: () -> String,
+    onImportBackupJson: (String) -> Unit,
+    onFeedback: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val c = SpTheme.colors
     val context = LocalContext.current
+    BackHandler(onBack = onBack)
+
+    var editingProvider by remember { mutableStateOf<AiProvider?>(null) }
+    var showModelsSheet by remember { mutableStateOf(false) }
+    var activeTaskPicker by remember { mutableStateOf<AiTaskSlot?>(null) }
+    var showBgAiSheet by remember { mutableStateOf(false) }
+    var showWidgetPinSheet by remember { mutableStateOf(false) }
+    var showWidgetPlatformSheet by remember { mutableStateOf(false) }
+    var showSyncIntervalSheet by remember { mutableStateOf(false) }
+    var showAdvancedSheet by remember { mutableStateOf(false) }
+
     val exportBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
@@ -148,11 +161,12 @@ fun SettingsScreen(
                 out.write(payload.toByteArray(Charsets.UTF_8))
             } ?: error("Impossibile aprire il file di destinazione")
         }.onSuccess {
-            onBackupFeedback("Backup JSON esportato correttamente (chiavi API escluse)")
+            onFeedback("Backup JSON esportato correttamente (chiavi API escluse)")
         }.onFailure { err ->
-            onBackupFeedback("Errore esportazione backup: ${err.message ?: "sconosciuto"}")
+            onFeedback("Errore esportazione backup: ${err.message ?: "sconosciuto"}")
         }
     }
+
     val importBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -161,29 +175,10 @@ fun SettingsScreen(
             context.contentResolver.openInputStream(uri)?.use { input ->
                 input.readBytes().toString(Charsets.UTF_8)
             } ?: error("Impossibile leggere il file selezionato")
-        }.onSuccess { rawJson ->
-            onImportBackupJson(rawJson)
-        }.onFailure { err ->
-            onBackupFeedback("Errore lettura backup: ${err.message ?: "sconosciuto"}")
+        }.onSuccess(onImportBackupJson).onFailure { err ->
+            onFeedback("Errore lettura backup: ${err.message ?: "sconosciuto"}")
         }
     }
-    var repoInput by remember(state.settings.githubRepo) {
-        mutableStateOf(state.settings.githubRepo)
-    }
-    var selectedKeyProvider by remember {
-        mutableStateOf(
-            state.settings.configuredProviders().firstOrNull() ?: AiProvider.GEMINI
-        )
-    }
-    val savedKeyForSelectedProvider = state.settings.apiKeyFor(selectedKeyProvider)
-    var providerKeyInput by remember(selectedKeyProvider, savedKeyForSelectedProvider) {
-        mutableStateOf(savedKeyForSelectedProvider)
-    }
-    var tastePromptInput by remember(state.settings.userTastePrompt) {
-        mutableStateOf(state.settings.userTastePrompt)
-    }
-    var showApiKey by remember { mutableStateOf(false) }
-    var activeTaskPicker by remember { mutableStateOf<AiTaskSlot?>(null) }
 
     val modelsByProvider = remember(
         state.settings.availableGeminiModels,
@@ -207,678 +202,251 @@ fun SettingsScreen(
         }
     }
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(c.paper)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars)
     ) {
-        // 1. Pin Widget card
-        item {
-            SettingsCard(title = "Widget sulla Home") {
-                Text(
-                    text = "Il widget Editorial Bento si adatta automaticamente al tema chiaro o scuro del telefono e mostra la #1 in evidenza seguita dalla Top 10 filtrata.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                FilledTonalButton(
-                    onClick = {
-                        val msg = requestPinEditorialWidget(context)
-                        onWidgetPinFeedback(msg)
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.AutoMirrored.Rounded.AddToHomeScreen, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Aggiungi widget alla home")
-                }
-            }
-        }
-
-        // 2. Anti-noise filters
-        item {
-            SettingsCard(title = "Filtri anti-rumore (condivisi con il Widget)") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("Sconto minimo", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "${state.settings.minDiscountPercent}%",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                }
-                Slider(
-                    value = state.settings.minDiscountPercent.toFloat(),
-                    onValueChange = { onMinDiscountChange((it / 5f).roundToInt() * 5) },
-                    valueRange = 0f..75f,
-                    colors = SliderDefaults.colors(thumbColor = EshopCrimson, activeTrackColor = EshopCrimson)
-                )
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("Prezzo di listino minimo", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "${state.settings.minRegularPriceEur.roundToInt()} €",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                }
-                Slider(
-                    value = state.settings.minRegularPriceEur,
-                    onValueChange = { onMinRegularPriceChange(((it / 5f).roundToInt() * 5).toFloat()) },
-                    valueRange = 0f..30f,
-                    colors = SliderDefaults.colors(thumbColor = EshopCrimson, activeTrackColor = EshopCrimson)
+        // Header with Back arrow + "Impostazioni"
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 6.dp, end = 20.dp, top = 8.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clickable(onClick = onBack),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                    contentDescription = stringResource(R.string.action_back),
+                    tint = c.ink,
+                    modifier = Modifier.size(22.dp)
                 )
             }
+            Text(
+                text = stringResource(R.string.settings_title),
+                style = SpType.sheetTitle,
+                color = c.ink
+            )
         }
 
-        // 2b. Taste engine weight & Gemini AI configuration
-        item {
-            val ratedCount = state.settings.likedGames.count { it.isPositiveRating || it.isNegativeRating }
-            val ownedCount = state.settings.likedGames.count { it.isOwned }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp)
+        ) {
+            // Group 1: Intelligenza artificiale
+            Spacer(modifier = Modifier.height(14.dp))
+            SectionLabel(text = stringResource(R.string.settings_group_ai))
+            Spacer(modifier = Modifier.height(2.dp))
 
-            SettingsCard(title = "Motore AI & Raccomandazioni") {
-                Text(
-                    text = "I tuoi voti 1–5★ e i giochi posseduti si gestiscono nella tab Libreria ($ratedCount valutati · $ownedCount posseduti).",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            AiProvider.entries.forEach { provider ->
+                val connected = state.settings.hasKeyFor(provider)
+                SettingsRow(
+                    title = provider.shortLabel,
+                    value = stringResource(
+                        if (connected) R.string.settings_connected else R.string.settings_not_connected
+                    ),
+                    valueStrong = connected,
+                    onClick = { editingProvider = provider }
                 )
-                Spacer(modifier = Modifier.height(6.dp))
-                TextButton(
-                    onClick = onOpenLibraryTab,
-                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp)
-                ) {
-                    Text("Vai alla Libreria →", color = EshopCrimson)
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("Influenza dei voti sulla classifica", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "${state.settings.recommendationWeight}%",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                }
-                Slider(
-                    value = state.settings.recommendationWeight.toFloat(),
-                    onValueChange = { onRecommendationWeightChange((it / 10f).roundToInt() * 10) },
-                    valueRange = 0f..100f,
-                    colors = SliderDefaults.colors(thumbColor = EshopCrimson, activeTrackColor = EshopCrimson)
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Modelli AI per task (BYOK)",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    FilledTonalButton(
-                        onClick = { onRefreshModels(null) },
-                        enabled = !state.isLoadingModels,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        if (state.isLoadingModels) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Rounded.Refresh,
-                                contentDescription = "Aggiorna modelli",
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Aggiorna",
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                val totalDynamicCount = AiProvider.entries.sumOf { state.settings.availableModelsFor(it).size }
-                Text(
-                    text = if (totalDynamicCount > 0) {
-                        "$totalDynamicCount modelli live caricati (Gemini, OpenRouter, DeepSeek): scegli provider e modello ideale per ciascun task."
-                    } else {
-                        "Supporta Google Gemini, OpenRouter e DeepSeek. Scegli provider e modello per ogni task e tocca \"Aggiorna\" per caricare i cataloghi live."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TaskModelSelectorRow(
-                        slot = AiTaskSlot.RERANK,
-                        target = state.settings.rerankTarget,
-                        hasProviderKey = state.settings.hasKeyFor(state.settings.rerankTarget.provider),
-                        models = modelsByProvider[state.settings.rerankTarget.provider].orEmpty(),
-                        onClick = { activeTaskPicker = AiTaskSlot.RERANK }
-                    )
-                    TaskModelSelectorRow(
-                        slot = AiTaskSlot.INSIGHTS,
-                        target = state.settings.insightsTarget,
-                        hasProviderKey = state.settings.hasKeyFor(state.settings.insightsTarget.provider),
-                        models = modelsByProvider[state.settings.insightsTarget.provider].orEmpty(),
-                        onClick = { activeTaskPicker = AiTaskSlot.INSIGHTS }
-                    )
-                    TaskModelSelectorRow(
-                        slot = AiTaskSlot.SOUL,
-                        target = state.settings.soulTarget,
-                        hasProviderKey = state.settings.hasKeyFor(state.settings.soulTarget.provider),
-                        models = modelsByProvider[state.settings.soulTarget.provider].orEmpty(),
-                        onClick = { activeTaskPicker = AiTaskSlot.SOUL }
-                    )
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
-
-                Text(
-                    text = "Chiavi API Provider",
-                    style = MaterialTheme.typography.labelLarge
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    AiProvider.entries.forEach { provider ->
-                        val isTabSelected = selectedKeyProvider == provider
-                        val isConfigured = state.settings.hasKeyFor(provider)
-                        Surface(
-                            onClick = { selectedKeyProvider = provider },
-                            shape = RoundedCornerShape(12.dp),
-                            color = if (isTabSelected) {
-                                EshopCrimson
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainerHigh
-                            },
-                            border = BorderStroke(
-                                width = 1.dp,
-                                color = if (isTabSelected) EshopCrimson else MaterialTheme.colorScheme.outlineVariant
-                            ),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 9.dp),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = if (isConfigured) "✓ ${provider.shortLabel}" else provider.shortLabel,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = if (isTabSelected || isConfigured) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isTabSelected) Color.White else MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = providerKeyInput,
-                    onValueChange = { providerKeyInput = it },
-                    label = { Text("${selectedKeyProvider.displayName} API Key (${selectedKeyProvider.keyPlaceholder})") },
-                    singleLine = true,
-                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showApiKey = !showApiKey }) {
-                            Icon(
-                                imageVector = if (showApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                                contentDescription = if (showApiKey) "Nascondi" else "Mostra"
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilledTonalButton(
-                        onClick = { onSaveProviderApiKey(selectedKeyProvider, providerKeyInput) },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Salva chiave")
-                    }
-                    FilledTonalButton(
-                        onClick = { onTestProviderConnection(selectedKeyProvider, providerKeyInput) },
-                        enabled = (providerKeyInput.isNotBlank() || state.settings.hasKeyFor(selectedKeyProvider)) && !state.isTestingGemini,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        if (state.isTestingGemini) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text("Testa chiave")
-                        }
-                    }
-                }
-
-                if (state.settings.hasKeyFor(selectedKeyProvider) || state.settings.hasKeyFor(state.settings.rerankTarget.provider)) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (state.settings.hasKeyFor(state.settings.rerankTarget.provider)) {
-                            Button(
-                                onClick = onRerankWithGeminiNow,
-                                enabled = !state.isRefreshing,
-                                colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Ricalcola AI ora")
-                            }
-                        } else {
-                            Spacer(modifier = Modifier.weight(1f))
-                        }
-                        if (state.settings.hasKeyFor(selectedKeyProvider)) {
-                            TextButton(
-                                onClick = {
-                                    providerKeyInput = ""
-                                    onSaveProviderApiKey(selectedKeyProvider, "")
-                                }
-                            ) {
-                                Text("Rimuovi ${selectedKeyProvider.shortLabel}", color = EshopCrimson)
-                            }
-                        }
-                    }
-                }
-
-                val diagnosticText = state.geminiTestResult?.takeIf { it.isNotBlank() }
-                    ?: state.settings.geminiStatusSummary.takeIf { it.isNotBlank() }
-                if (diagnosticText != null) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = diagnosticText,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(10.dp)
-                        )
-                    }
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
-
-                Text(
-                    text = "Preferenze personali per l'IA (opzionale)",
-                    style = MaterialTheme.typography.labelLarge
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Descrivi cosa cerchi o vuoi evitare in generale: Gemini lo combinerà coi tuoi voti e commenti in Libreria.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = tastePromptInput,
-                    onValueChange = { if (it.length <= 600) tastePromptInput = it },
-                    label = { Text("Preferenze extra (es. generi, ritmo, portabilità)") },
-                    placeholder = { Text("Es. Amo roguelike tattici e metroidvania impegnativi; evito visual novel lunghe e farming simulator.") },
-                    minLines = 2,
-                    maxLines = 4,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilledTonalButton(
-                        onClick = { onSaveUserTastePrompt(tastePromptInput) },
-                        enabled = tastePromptInput.trim() != state.settings.userTastePrompt.trim(),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Salva preferenze")
-                    }
-                    if (tastePromptInput.isNotBlank() || state.settings.userTastePrompt.isNotBlank()) {
-                        TextButton(
-                            onClick = {
-                                tastePromptInput = ""
-                                onSaveUserTastePrompt("")
-                            }
-                        ) {
-                            Text("Svuota")
-                        }
-                    }
-                }
             }
-        }
 
-        // 3. Background sync frequency
-        item {
-            SettingsCard(title = "Sincronizzazione in background") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf(6, 12, 24).forEach { hours ->
-                        val selected = state.settings.syncIntervalHours == hours
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(
-                                    if (selected) EshopCrimson
-                                    else MaterialTheme.colorScheme.surfaceContainerHigh
-                                )
-                                .clickable { onSyncIntervalChange(hours) }
-                                .padding(vertical = 10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Ogni ${hours}h",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = formatLastSyncDetail(state.settings.lastSyncEpochMs),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
-                Text(
-                    text = "Analisi AI in background",
-                    style = MaterialTheme.typography.labelLarge
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Controlla quando i sync automatici possono interrogare il provider AI per valutare nuovi sconti.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf(
-                        BackgroundRerankPolicy.WIFI_ONLY to "Solo Wi-Fi",
-                        BackgroundRerankPolicy.ALWAYS to "Sempre",
-                        BackgroundRerankPolicy.OFF to "Mai"
-                    ).forEach { (policy, label) ->
-                        val selected = state.settings.backgroundRerankPolicy == policy
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(
-                                    if (selected) EshopCrimson
-                                    else MaterialTheme.colorScheme.surfaceContainerHigh
-                                )
-                                .clickable { onBackgroundRerankPolicyChange(policy) }
-                                .padding(vertical = 10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
+            val isDefaultModels = state.settings.rerankTarget == AiTaskTarget(AiProvider.GEMINI, GeminiModels.FLASH_LITE) &&
+                state.settings.insightsTarget == AiTaskTarget(AiProvider.GEMINI, GeminiModels.FLASH_LITE) &&
+                state.settings.soulTarget == AiTaskTarget(AiProvider.GEMINI, GeminiModels.HYDROGEN)
+            SettingsRow(
+                title = stringResource(R.string.settings_models_row),
+                subtitle = stringResource(R.string.settings_models_sub),
+                value = stringResource(
+                    if (isDefaultModels) R.string.settings_models_auto else R.string.settings_models_custom
+                ),
+                onClick = { showModelsSheet = true }
+            )
+
+            SettingsRow(
+                title = stringResource(R.string.settings_bg_ai),
+                value = state.settings.backgroundRerankPolicy.label,
+                onClick = { showBgAiSheet = true }
+            )
+
+            SettingsRow(
+                title = stringResource(R.string.settings_rerank_now),
+                subtitle = state.settings.geminiStatusSummary.takeIf { it.isNotBlank() },
+                value = if (state.isRefreshing) "In corso…" else null,
+                onClick = { if (!state.isRefreshing) onRerankWithGeminiNow() }
+            )
+
+            // Group 2: Widget
+            Spacer(modifier = Modifier.height(20.dp))
+            SectionLabel(text = stringResource(R.string.settings_group_widget))
+            Spacer(modifier = Modifier.height(2.dp))
+
+            SettingsRow(
+                title = stringResource(R.string.settings_widget_pin),
+                onClick = { showWidgetPinSheet = true }
+            )
+
+            val widgetPlatLabel = when (state.settings.widgetPlatformFilter) {
+                PlatformFilter.ALL -> stringResource(R.string.ranking_platform_all)
+                PlatformFilter.SWITCH_2 -> stringResource(R.string.ranking_platform_sw2)
+                PlatformFilter.SWITCH_1 -> stringResource(R.string.ranking_platform_sw1)
             }
-        }
+            SettingsRow(
+                title = stringResource(R.string.settings_widget_platform),
+                value = widgetPlatLabel,
+                onClick = { showWidgetPlatformSheet = true }
+            )
 
-        // 4. GitHub Auto-Update
-        item {
-            SettingsCard(title = "Auto-Update da GitHub") {
-                Text(
-                    text = "Versione installata: v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(10.dp))
+            // Group 3: Offerte
+            Spacer(modifier = Modifier.height(20.dp))
+            SectionLabel(text = stringResource(R.string.settings_group_deals))
+            Spacer(modifier = Modifier.height(2.dp))
 
-                OutlinedTextField(
-                    value = repoInput,
-                    onValueChange = { repoInput = it },
-                    label = { Text("Repository GitHub (owner/repo)") },
-                    placeholder = { Text("es. adriano/SwitchPulse") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+            SettingsRow(
+                title = stringResource(R.string.settings_sync_auto),
+                subtitle = formatLastSyncDetail(state.settings.lastSyncEpochMs),
+                value = "Ogni ${state.settings.syncIntervalHours} h",
+                onClick = { showSyncIntervalSheet = true }
+            )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Controlla automaticamente nuove release",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f).padding(end = 8.dp)
-                    )
-                    Switch(
+            // Group 4: App & Backup
+            Spacer(modifier = Modifier.height(20.dp))
+            SectionLabel(text = stringResource(R.string.settings_group_app))
+            Spacer(modifier = Modifier.height(2.dp))
+
+            SettingsRow(
+                title = stringResource(R.string.settings_updates_notify),
+                showChevron = false,
+                trailing = {
+                    SpSwitch(
                         checked = state.settings.autoCheckUpdates,
                         onCheckedChange = onAutoCheckUpdatesChange
                     )
-                }
+                },
+                onClick = { onAutoCheckUpdatesChange(!state.settings.autoCheckUpdates) }
+            )
 
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilledTonalButton(
-                        onClick = { onSaveGithubRepo(repoInput) },
-                        enabled = repoInput.trim() != state.settings.githubRepo
-                    ) {
-                        Text("Salva repo")
-                    }
-
-                    Button(
-                        onClick = {
-                            if (repoInput.trim() != state.settings.githubRepo) {
-                                onSaveGithubRepo(repoInput)
-                            }
-                            onCheckUpdates()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Rounded.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Controlla")
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                when (val u = state.updateState) {
-                    UpdateUiState.Idle -> Unit
-                    UpdateUiState.Checking -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Controllo release su GitHub...", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                    UpdateUiState.NotConfigured -> {
-                        Text(
-                            text = "Inserisci owner/repo del tuo repository pubblico GitHub per abilitare l'aggiornamento automatico.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    is UpdateUiState.UpToDate -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Rounded.CheckCircle,
-                                contentDescription = null,
-                                tint = Color(0xFF10B981),
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Hai già l'ultima versione (v${u.version}).",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    }
-                    is UpdateUiState.Available -> {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    text = "Disponibile ${u.release.tagName}",
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                                if (u.release.changelog.isNotBlank()) {
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = u.release.changelog.take(240),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Button(
-                                    onClick = { onDownloadAndInstall(u.release) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text("Scarica e installa (${u.release.apkFileName})")
-                                }
-                            }
-                        }
-                    }
-                    is UpdateUiState.Downloading -> {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                text = "Download ${u.release.tagName}: ${(u.progress * 100).roundToInt()}%",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            LinearProgressIndicator(
-                                progress = { u.progress },
-                                modifier = Modifier.fillMaxWidth(),
-                                color = EshopCrimson
-                            )
-                        }
-                    }
-                    is UpdateUiState.ReadyToInstall -> {
-                        Button(
-                            onClick = { onInstallDownloaded(u.release, u.apkFile) },
-                            colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Installa ${u.release.tagName}")
-                        }
-                    }
-                    is UpdateUiState.Error -> {
-                        Text(
-                            text = u.message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = EshopCrimson
-                        )
-                    }
-                }
-            }
-        }
-
-        // 4b. JSON Backup & Restore
-        item {
-            SettingsCard(title = "Backup & Ripristino (JSON)") {
-                Text(
-                    text = "Esporta o ripristina libreria, voti, preferenze, titoli nascosti e Anima del Giocatore. Per sicurezza le chiavi API non vengono mai incluse.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilledTonalButton(
-                        onClick = { exportBackupLauncher.launch("switchpulse-backup.json") },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Esporta JSON")
-                    }
-                    Button(
-                        onClick = { importBackupLauncher.launch(arrayOf("application/json", "text/plain")) },
-                        colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Importa JSON")
-                    }
-                }
-            }
-        }
-
-        // 5. Blacklist management
-        item {
-            SettingsCard(title = "Titoli nascosti (${state.settings.blacklistIds.size})") {
-                if (state.settings.blacklistIds.isEmpty()) {
-                    Text(
-                        text = "Nessun gioco nascosto. Premi × su qualsiasi riga nella classifica per escluderlo per sempre.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+            when (val u = state.updateState) {
+                is UpdateUiState.Available -> {
+                    SettingsRow(
+                        title = "Scarica e installa ${u.release.tagName}",
+                        subtitle = u.release.changelog.lineSequence().firstOrNull()?.take(80),
+                        value = "Installa",
+                        valueStrong = true,
+                        onClick = { onDownloadAndInstall(u.release) }
                     )
-                } else {
-                    val entries = state.settings.blacklistIds.toList()
-                    entries.forEachIndexed { idx, id ->
-                        val title = state.settings.blacklistTitles[id] ?: "Titolo #$id"
+                }
+                is UpdateUiState.Downloading -> {
+                    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = title,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.weight(1f).padding(end = 8.dp)
+                                text = "Download ${u.release.tagName}…",
+                                style = SpType.rowTitle.copy(fontSize = 15.sp),
+                                color = c.ink
                             )
-                            TextButton(onClick = { onUnhideDeal(id) }) {
-                                Text("Ripristina", color = EshopCrimson)
-                            }
+                            Text(
+                                text = "${(u.progress * 100).roundToInt()}%",
+                                style = SpType.captionBold,
+                                color = c.ink
+                            )
                         }
-                        if (idx < entries.lastIndex) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { u.progress },
+                            color = c.ink,
+                            trackColor = c.track,
+                            modifier = Modifier.fillMaxWidth().height(4.dp)
+                        )
                     }
+                    HorizontalDivider(thickness = 1.dp, color = c.line)
+                }
+                is UpdateUiState.ReadyToInstall -> {
+                    SettingsRow(
+                        title = "Installa ${u.release.tagName}",
+                        value = "Installa",
+                        valueStrong = true,
+                        onClick = { onInstallDownloaded(u.release, u.apkFile) }
+                    )
+                }
+                else -> {
+                    val versionSub = when (u) {
+                        UpdateUiState.Checking -> "Controllo release su GitHub…"
+                        is UpdateUiState.UpToDate -> "Aggiornata (v${u.version})"
+                        is UpdateUiState.Error -> u.message
+                        else -> "Da GitHub · ${state.settings.githubRepo.ifBlank { BuildConfig.DEFAULT_GITHUB_REPO }}"
+                    }
+                    SettingsRow(
+                        title = "Versione ${BuildConfig.VERSION_NAME}",
+                        subtitle = versionSub,
+                        value = "Controlla",
+                        valueStrong = true,
+                        onClick = onCheckUpdates
+                    )
                 }
             }
+
+            SettingsRow(
+                title = stringResource(R.string.settings_backup_export),
+                subtitle = "Libreria, preferenze, Anima e nascosti (escluse chiavi API)",
+                onClick = { exportBackupLauncher.launch("switchpulse-backup.json") }
+            )
+
+            SettingsRow(
+                title = stringResource(R.string.settings_backup_import),
+                onClick = { importBackupLauncher.launch(arrayOf("application/json", "text/plain")) }
+            )
+
+            SettingsRow(
+                title = stringResource(R.string.settings_advanced),
+                subtitle = state.settings.githubRepo.ifBlank { BuildConfig.DEFAULT_GITHUB_REPO },
+                onClick = { showAdvancedSheet = true }
+            )
         }
+    }
+
+    // Sub-sheets
+    val prov = editingProvider
+    if (prov != null) {
+        ProviderApiKeySheet(
+            provider = prov,
+            savedKey = state.settings.apiKeyFor(prov),
+            isTesting = state.isTestingGemini,
+            diagnosticText = state.geminiTestResult ?: state.settings.geminiStatusSummary,
+            onDismiss = { editingProvider = null },
+            onSave = { newKey ->
+                onSaveProviderApiKey(prov, newKey)
+                editingProvider = null
+            },
+            onTest = { pending -> onTestProviderConnection(prov, pending) },
+            onRemove = {
+                onSaveProviderApiKey(prov, "")
+                editingProvider = null
+            }
+        )
+    }
+
+    if (showModelsSheet) {
+        TaskModelsOverviewSheet(
+            settings = state.settings,
+            onPickSlot = { slot ->
+                showModelsSheet = false
+                activeTaskPicker = slot
+            },
+            onDismiss = { showModelsSheet = false }
+        )
     }
 
     val currentPickerSlot = activeTaskPicker
@@ -888,7 +456,7 @@ fun SettingsScreen(
             AiTaskSlot.INSIGHTS -> state.settings.insightsTarget
             AiTaskSlot.SOUL -> state.settings.soulTarget
         }
-        ModelPickerBottomSheet(
+        EditorialModelPickerSheet(
             slot = currentPickerSlot,
             settings = state.settings,
             modelsByProvider = modelsByProvider,
@@ -906,90 +474,227 @@ fun SettingsScreen(
             onDismiss = { activeTaskPicker = null }
         )
     }
+
+    if (showBgAiSheet) {
+        OptionPickerSheet(
+            title = stringResource(R.string.settings_bg_ai),
+            options = BackgroundRerankPolicy.entries.map { it.label },
+            selectedIndex = BackgroundRerankPolicy.entries.indexOf(state.settings.backgroundRerankPolicy),
+            onSelect = { idx ->
+                onBackgroundRerankPolicyChange(BackgroundRerankPolicy.entries[idx])
+                showBgAiSheet = false
+            },
+            onDismiss = { showBgAiSheet = false }
+        )
+    }
+
+    if (showWidgetPlatformSheet) {
+        val options = listOf(
+            PlatformFilter.ALL to stringResource(R.string.ranking_platform_all),
+            PlatformFilter.SWITCH_2 to stringResource(R.string.ranking_platform_sw2),
+            PlatformFilter.SWITCH_1 to stringResource(R.string.ranking_platform_sw1)
+        )
+        OptionPickerSheet(
+            title = stringResource(R.string.settings_widget_platform),
+            options = options.map { it.second },
+            selectedIndex = options.indexOfFirst { it.first == state.settings.widgetPlatformFilter }.coerceAtLeast(0),
+            onSelect = { idx ->
+                onWidgetPlatformFilterChange(options[idx].first)
+                showWidgetPlatformSheet = false
+            },
+            onDismiss = { showWidgetPlatformSheet = false }
+        )
+    }
+
+    if (showSyncIntervalSheet) {
+        val hoursOptions = listOf(6, 12, 24)
+        OptionPickerSheet(
+            title = stringResource(R.string.settings_sync_auto),
+            options = hoursOptions.map { "Ogni $it h" },
+            selectedIndex = hoursOptions.indexOf(state.settings.syncIntervalHours).coerceAtLeast(1),
+            onSelect = { idx ->
+                onSyncIntervalChange(hoursOptions[idx])
+                showSyncIntervalSheet = false
+            },
+            onDismiss = { showSyncIntervalSheet = false }
+        )
+    }
+
+    if (showWidgetPinSheet) {
+        WidgetPinPickerSheet(
+            onPin = { widgetCls ->
+                val feedback = requestPinWidget(context, widgetCls)
+                onFeedback(feedback)
+                showWidgetPinSheet = false
+            },
+            onDismiss = { showWidgetPinSheet = false }
+        )
+    }
+
+    if (showAdvancedSheet) {
+        AdvancedRepoSheet(
+            currentRepo = state.settings.githubRepo,
+            onSave = { repo ->
+                onSaveGithubRepo(repo)
+                showAdvancedSheet = false
+            },
+            onDismiss = { showAdvancedSheet = false }
+        )
+    }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TaskModelSelectorRow(
-    slot: AiTaskSlot,
-    target: AiTaskTarget,
-    hasProviderKey: Boolean,
-    models: List<GeminiModelInfo>,
-    onClick: () -> Unit
+private fun ProviderApiKeySheet(
+    provider: AiProvider,
+    savedKey: String,
+    isTesting: Boolean,
+    diagnosticText: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+    onTest: (String) -> Unit,
+    onRemove: () -> Unit
 ) {
-    val display = models.firstOrNull { it.id == target.modelId }?.displayName ?: target.modelId
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    val c = SpTheme.colors
+    var keyInput by remember(provider, savedKey) { mutableStateOf(savedKey) }
+    var showKey by remember { mutableStateOf(false) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.paper,
+        scrimColor = c.scrim,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                Text(
-                    text = slot.title,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = slot.subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(5.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = EshopCrimson.copy(alpha = 0.14f)
-                    ) {
-                        Text(
-                            text = target.provider.shortLabel,
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = EshopCrimson,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                    Text(
-                        text = display,
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (!hasProviderKey) {
-                        Text(
-                            text = "· chiave mancante",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
+            val hint = when (provider) {
+                AiProvider.GEMINI -> "Google AI Studio · piano gratuito disponibile"
+                AiProvider.OPENROUTER -> "Aggregator API con modelli gratuiti (:free) e a pagamento"
+                AiProvider.DEEPSEEK -> "API DeepSeek V3 / Reasoner a basso costo"
             }
-            Icon(
-                imageVector = Icons.Rounded.KeyboardArrowDown,
-                contentDescription = "Cambia modello",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            Text(text = provider.displayName, style = SpType.sheetTitle, color = c.ink)
+            Text(text = hint, style = SpType.caption, color = c.muted)
+
+            OutlinedTextField(
+                value = keyInput,
+                onValueChange = { keyInput = it },
+                placeholder = { Text(provider.keyPlaceholder, style = SpType.body, color = c.muted) },
+                singleLine = true,
+                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { showKey = !showKey }) {
+                        Icon(
+                            imageVector = if (showKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                            contentDescription = null,
+                            tint = c.muted
+                        )
+                    }
+                },
+                shape = RoundedCornerShape(4.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = c.ink,
+                    unfocusedBorderColor = c.border,
+                    focusedTextColor = c.ink,
+                    unfocusedTextColor = c.ink
+                ),
+                modifier = Modifier.fillMaxWidth()
             )
+
+            if (diagnosticText.isNotBlank()) {
+                Text(
+                    text = diagnosticText,
+                    style = SpType.caption,
+                    color = if (diagnosticText.startsWith("⚠️")) c.urgent else c.ink2,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(c.bannerBg)
+                        .padding(10.dp)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SecondaryButton(
+                    text = "Prova",
+                    onClick = { onTest(keyInput) },
+                    enabled = !isTesting && (keyInput.isNotBlank() || savedKey.isNotBlank()),
+                    height = 48.dp
+                )
+                if (savedKey.isNotBlank()) {
+                    SecondaryButton(
+                        text = stringResource(R.string.action_remove),
+                        onClick = onRemove,
+                        height = 48.dp
+                    )
+                }
+                PrimaryButton(
+                    text = stringResource(R.string.action_save),
+                    onClick = { onSave(keyInput) },
+                    modifier = Modifier.weight(1f),
+                    height = 48.dp
+                )
+            }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ModelPickerBottomSheet(
+private fun TaskModelsOverviewSheet(
+    settings: FilterSettings,
+    onPickSlot: (AiTaskSlot) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val c = SpTheme.colors
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.paper,
+        scrimColor = c.scrim,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.settings_models_row),
+                style = SpType.sheetTitle,
+                color = c.ink
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            AiTaskSlot.entries.forEach { slot ->
+                val target = when (slot) {
+                    AiTaskSlot.RERANK -> settings.rerankTarget
+                    AiTaskSlot.INSIGHTS -> settings.insightsTarget
+                    AiTaskSlot.SOUL -> settings.soulTarget
+                }
+                SettingsRow(
+                    title = slot.title,
+                    subtitle = slot.subtitle,
+                    value = "${target.provider.shortLabel} · ${target.modelId.substringAfterLast('/').take(20)}",
+                    onClick = { onPickSlot(slot) }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EditorialModelPickerSheet(
     slot: AiTaskSlot,
-    settings: com.switchpulse.app.data.model.FilterSettings,
+    settings: FilterSettings,
     modelsByProvider: Map<AiProvider, List<GeminiModelInfo>>,
     currentTarget: AiTaskTarget,
     isRefreshingModels: Boolean,
@@ -997,145 +702,93 @@ private fun ModelPickerBottomSheet(
     onSelectModel: (AiProvider, String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val c = SpTheme.colors
     var activeProvider by remember(currentTarget.provider) { mutableStateOf(currentTarget.provider) }
     var filterText by remember { mutableStateOf("") }
     var freeOnly by remember { mutableStateOf(false) }
 
     val providerModels = modelsByProvider[activeProvider].orEmpty()
-    val isLive = settings.availableModelsFor(activeProvider).isNotEmpty()
     val hasProviderKey = settings.hasKeyFor(activeProvider)
-
     val filteredModels = remember(providerModels, filterText, freeOnly, activeProvider) {
         val q = filterText.trim().lowercase()
         providerModels.filter { model ->
             val matchesFree = !freeOnly || activeProvider != AiProvider.OPENROUTER || model.isFree
             val matchesQuery = q.isEmpty() ||
                 model.id.lowercase().contains(q) ||
-                model.displayName.lowercase().contains(q) ||
-                model.description.lowercase().contains(q)
+                model.displayName.lowercase().contains(q)
             matchesFree && matchesQuery
         }
     }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.paper,
+        scrimColor = c.scrim,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 20.dp)
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = slot.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = if (isLive) {
-                            "${providerModels.size} modelli live da ${activeProvider.displayName}"
-                        } else {
-                            "Elenco base ${activeProvider.displayName} (tocca ↻ per aggiornare)"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(
-                    onClick = { onRefreshModels(activeProvider) },
-                    enabled = !isRefreshingModels && (activeProvider == AiProvider.OPENROUTER || hasProviderKey)
+                Text(text = slot.title, style = SpType.sheetTitle, color = c.ink)
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clickable(enabled = !isRefreshingModels) { onRefreshModels(activeProvider) },
+                    contentAlignment = Alignment.Center
                 ) {
                     if (isRefreshingModels) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = c.ink)
                     } else {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "Aggiorna catalogo")
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, tint = c.ink)
                     }
                 }
             }
 
-            // Provider tabs
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                AiProvider.entries.forEach { provider ->
-                    val selectedTab = provider == activeProvider
-                    val hasKey = settings.hasKeyFor(provider)
-                    Surface(
-                        onClick = {
-                            activeProvider = provider
-                            freeOnly = false
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (selectedTab) EshopCrimson else MaterialTheme.colorScheme.surfaceContainerHigh,
-                        border = BorderStroke(
-                            1.dp,
-                            if (selectedTab) EshopCrimson else MaterialTheme.colorScheme.outlineVariant
-                        ),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = if (hasKey) "✓ ${provider.shortLabel}" else provider.shortLabel,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = if (selectedTab) Color.White else MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
+            SegmentedChoice(
+                items = AiProvider.entries.map { p ->
+                    if (settings.hasKeyFor(p)) "${p.shortLabel} ✓" else p.shortLabel
+                },
+                selectedIndex = AiProvider.entries.indexOf(activeProvider),
+                onSelect = { idx ->
+                    activeProvider = AiProvider.entries[idx]
+                    freeOnly = false
                 }
-            }
+            )
 
             if (!hasProviderKey) {
                 Text(
-                    text = "Chiave ${activeProvider.displayName} non ancora configurata: ricordati di inserirla nella sezione Chiavi API qui sotto.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error
+                    text = "Chiave ${activeProvider.shortLabel} non collegata.",
+                    style = SpType.caption,
+                    color = c.urgent
                 )
             }
 
             if (activeProvider == AiProvider.OPENROUTER) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Box(
+                    modifier = Modifier
+                        .height(34.dp)
+                        .clip(RoundedCornerShape(17.dp))
+                        .background(if (freeOnly) c.ink else Color.Transparent)
+                        .border(BorderStroke(1.dp, if (freeOnly) c.ink else c.border), RoundedCornerShape(17.dp))
+                        .clickable { freeOnly = !freeOnly }
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Surface(
-                        onClick = { freeOnly = !freeOnly },
-                        shape = RoundedCornerShape(999.dp),
-                        color = if (freeOnly) {
-                            EshopCrimson.copy(alpha = 0.16f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceContainerHigh
-                        },
-                        border = BorderStroke(
-                            1.dp,
-                            if (freeOnly) EshopCrimson else MaterialTheme.colorScheme.outlineVariant
-                        )
-                    ) {
-                        Text(
-                            text = if (freeOnly) "✓ Solo modelli Gratis (\$0)" else "Filtra solo Gratis (\$0)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (freeOnly) EshopCrimson else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        )
-                    }
+                    Text(
+                        text = if (freeOnly) "✓ Solo gratis (\$0)" else "Filtra solo gratis (\$0)",
+                        style = SpType.captionBold,
+                        color = if (freeOnly) c.paper else c.ink
+                    )
                 }
             }
 
@@ -1143,9 +796,10 @@ private fun ModelPickerBottomSheet(
                 OutlinedTextField(
                     value = filterText,
                     onValueChange = { filterText = it },
-                    placeholder = { Text("Filtra modello (es. free, llama, deepseek, flash...)") },
-                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                    placeholder = { Text("Filtra modello…", style = SpType.body, color = c.muted) },
+                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = c.muted) },
                     singleLine = true,
+                    shape = RoundedCornerShape(4.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -1153,118 +807,166 @@ private fun ModelPickerBottomSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 390.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .heightIn(max = 380.dp)
             ) {
                 items(filteredModels, key = { "${it.provider.id}:${it.id}" }) { model ->
                     val isSelected = model.provider == currentTarget.provider && model.id == currentTarget.modelId
-                    val isRecommended = model.provider == AiProvider.GEMINI && model.id == slot.recommendedId
-                    Surface(
-                        onClick = { onSelectModel(model.provider, model.id) },
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (isSelected) {
-                            EshopCrimson.copy(alpha = 0.14f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceContainerHigh
-                        },
-                        border = BorderStroke(
-                            width = if (isSelected) 1.5.dp else 1.dp,
-                            color = if (isSelected) EshopCrimson else MaterialTheme.colorScheme.outlineVariant
-                        )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectModel(model.provider, model.id) }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = model.displayName,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isSelected) EshopCrimson else MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.weight(1f).padding(end = 8.dp)
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    if (model.isFree) {
-                                        Surface(
-                                            shape = RoundedCornerShape(999.dp),
-                                            color = MaterialTheme.colorScheme.tertiaryContainer
-                                        ) {
-                                            Text(
-                                                text = "GRATIS",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
-                                    if (isRecommended) {
-                                        Surface(
-                                            shape = RoundedCornerShape(999.dp),
-                                            color = MaterialTheme.colorScheme.primaryContainer
-                                        ) {
-                                            Text(
-                                                text = "Consigliato",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = model.id,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = model.displayName,
+                                style = SpType.rowTitle.copy(
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                ),
+                                color = if (isSelected) c.accentText else c.ink,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-                            if (model.description.isNotBlank()) {
-                                Text(
-                                    text = model.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                            Text(
+                                text = if (model.isFree) "${model.id} · gratis" else model.id,
+                                style = SpType.caption,
+                                color = c.muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (isSelected) {
+                            Icon(Icons.Rounded.Check, contentDescription = null, tint = c.ink, modifier = Modifier.size(18.dp))
                         }
                     }
+                    HorizontalDivider(thickness = 1.dp, color = c.line)
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsCard(
+private fun OptionPickerSheet(
     title: String,
-    content: @Composable () -> Unit
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-        tonalElevation = 1.dp
+    val c = SpTheme.colors
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.paper,
+        scrimColor = c.scrim,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium
-            )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text(text = title, style = SpType.sheetTitle, color = c.ink)
             Spacer(modifier = Modifier.height(10.dp))
-            content()
+            options.forEachIndexed { idx, label ->
+                SettingsRow(
+                    title = label,
+                    showChevron = false,
+                    trailing = {
+                        if (idx == selectedIndex) {
+                            Icon(Icons.Rounded.Check, contentDescription = null, tint = c.ink, modifier = Modifier.size(18.dp))
+                        }
+                    },
+                    onClick = { onSelect(idx) }
+                )
+            }
         }
     }
 }
 
-private fun requestPinEditorialWidget(context: Context): String {
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WidgetPinPickerSheet(
+    onPin: (Class<*>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val c = SpTheme.colors
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.paper,
+        scrimColor = c.scrim,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text(text = stringResource(R.string.settings_widget_pin), style = SpType.sheetTitle, color = c.ink)
+            Spacer(modifier = Modifier.height(10.dp))
+            SettingsRow(
+                title = stringResource(R.string.widget_w1_label),
+                subtitle = "4×4 · Copertina n. 1 protagonista + offerte 2–4",
+                onClick = { onPin(TopCoverWidgetReceiver::class.java) }
+            )
+            SettingsRow(
+                title = stringResource(R.string.widget_w12_label),
+                subtitle = "4×2 · Carosello interattivo con tutta la Top 10",
+                onClick = { onPin(CarouselWidgetReceiver::class.java) }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AdvancedRepoSheet(
+    currentRepo: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val c = SpTheme.colors
+    var repoInput by remember(currentRepo) { mutableStateOf(currentRepo) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.paper,
+        scrimColor = c.scrim,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(text = stringResource(R.string.settings_advanced), style = SpType.sheetTitle, color = c.ink)
+            OutlinedTextField(
+                value = repoInput,
+                onValueChange = { repoInput = it },
+                label = { Text("Repository GitHub (owner/repo)") },
+                singleLine = true,
+                shape = RoundedCornerShape(4.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+            PrimaryButton(
+                text = stringResource(R.string.action_save),
+                onClick = { onSave(repoInput.trim()) },
+                height = 48.dp
+            )
+        }
+    }
+}
+
+private fun requestPinWidget(context: Context, receiverClass: Class<*>): String {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
         return "Tieni premuto sulla home del telefono e aggiungi il widget SwitchPulse."
     }
@@ -1272,7 +974,7 @@ private fun requestPinEditorialWidget(context: Context): String {
     if (!manager.isRequestPinAppWidgetSupported) {
         return "Il tuo launcher non supporta l'aggiunta rapida: aggiungilo dal menu Widget della home."
     }
-    val provider = ComponentName(context, EditorialBentoWidgetReceiver::class.java)
+    val provider = ComponentName(context, receiverClass)
     val requested = manager.requestPinAppWidget(provider, null, null)
     return if (requested) {
         "Conferma l'aggiunta del widget dal popup del launcher."
@@ -1282,7 +984,7 @@ private fun requestPinEditorialWidget(context: Context): String {
 }
 
 private fun formatLastSyncDetail(epochMs: Long): String {
-    if (epochMs <= 0L) return "Ultimo aggiornamento: mai eseguito"
+    if (epochMs <= 0L) return "Ultimo aggiornamento mai eseguito"
     val fmt = SimpleDateFormat("dd MMM, HH:mm", Locale.ITALY)
-    return "Ultimo aggiornamento: ${fmt.format(Date(epochMs))} · Nintendo eShop Italia"
+    return "Ultimo aggiornamento ${fmt.format(Date(epochMs))} · Nintendo eShop Italia"
 }

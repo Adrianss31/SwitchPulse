@@ -1,131 +1,105 @@
 package com.switchpulse.app.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Bookmark
-import androidx.compose.material.icons.rounded.BookmarkBorder
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Clear
-import androidx.compose.material.icons.rounded.CollectionsBookmark
-import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Star
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.rounded.ChatBubbleOutline
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil3.compose.AsyncImage
+import com.switchpulse.app.R
 import com.switchpulse.app.data.DealFilterEngine
 import com.switchpulse.app.data.RecommendationEngine
-import com.switchpulse.app.data.TasteGenreBar
-import com.switchpulse.app.data.model.DealTitleNormalizer
-import com.switchpulse.app.data.model.GamerSoulProfile
 import com.switchpulse.app.data.model.LikedGame
-import com.switchpulse.app.ui.theme.EshopCrimson
-import com.switchpulse.app.ui.theme.EshopCrimsonSoft
-import java.util.Locale
+import com.switchpulse.app.ui.components.Cover
+import com.switchpulse.app.ui.components.EmptyState
+import com.switchpulse.app.ui.components.SectionLabel
+import com.switchpulse.app.ui.components.StatTrio
+import com.switchpulse.app.ui.components.SwipeActionBackground
+import com.switchpulse.app.ui.components.TasteBars
+import com.switchpulse.app.ui.components.UnderlineTabs
+import com.switchpulse.app.ui.motion.LocalReduceMotion
+import com.switchpulse.app.ui.motion.Motion
+import com.switchpulse.app.ui.motion.hapticConfirm
+import com.switchpulse.app.ui.motion.hapticTick
+import com.switchpulse.app.ui.theme.SpTheme
+import com.switchpulse.app.ui.theme.SpType
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
-private val WarmGoldDark = Color(0xFFFBBF24)
-private val WarmGoldLight = Color(0xFFB45309)
-private val BarAmber = Color(0xFFF59E0B)
-
-private enum class LibraryFilter(val label: String) {
-    ALL("Tutti"),
-    OWNED("Posseduti"),
-    BACKLOG("Da giocare"),
-    LIKED("Apprezzati 4–5★"),
-    DISLIKED("1–2★ Sconsigliati")
+private enum class LibraryFilterTab {
+    ALL,
+    OWNED,
+    BACKLOG,
+    LIKED,
+    DISLIKED
 }
 
+@OptIn(ExperimentalSharedTransitionApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun LibraryScreen(
     state: MainUiState,
-    showAddGameSheet: Boolean,
+    sharedTransitionScope: SharedTransitionScope,
+    animatedVisibilityScope: AnimatedVisibilityScope,
+    onOpenSettings: () -> Unit,
     onOpenAddGameSheet: () -> Unit,
-    onDismissAddGameSheet: () -> Unit,
-    onSearchGames: (String) -> Unit,
-    onClearSearchResults: () -> Unit,
-    onSetGameRating: (LikedGame, Int?) -> Unit,
-    onSetGameOwned: (LikedGame, Boolean) -> Unit,
-    onSetGameNote: (LikedGame, String?) -> Unit = { _, _ -> },
-    onSetGameTargetPrice: (LikedGame, Double?) -> Unit = { _, _ -> },
-    onRemoveGame: (String) -> Unit,
-    onOpenEshop: (String) -> Unit,
-    onGenerateGamerSoul: () -> Unit = {},
-    onOpenDiscoverySheet: () -> Unit = {},
-    onRefreshDiscoveryPicks: () -> Unit = {},
+    onOpenLibraryDetail: (LikedGame) -> Unit,
+    onSwipeRemoveGame: (LikedGame) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var activeFilter by remember { mutableStateOf(LibraryFilter.ALL) }
-    var expandedGameId by remember { mutableStateOf<String?>(null) }
+    val c = SpTheme.colors
+    var activeFilter by remember { mutableStateOf(LibraryFilterTab.ALL) }
 
     val library = state.settings.likedGames
     val tasteBars = remember(library) {
@@ -134,1276 +108,322 @@ fun LibraryScreen(
 
     val filteredItems = remember(library, activeFilter) {
         when (activeFilter) {
-            LibraryFilter.ALL -> library
-            LibraryFilter.OWNED -> library.filter { it.isOwned }
-            LibraryFilter.BACKLOG -> library.filter { it.isOwned && it.rating == null }
-            LibraryFilter.LIKED -> library.filter { it.isPositiveRating }
-            LibraryFilter.DISLIKED -> library.filter { it.isNegativeRating }
+            LibraryFilterTab.ALL -> library
+            LibraryFilterTab.OWNED -> library.filter { it.isOwned }
+            LibraryFilterTab.BACKLOG -> library.filter { it.isOwned && it.rating == null }
+            LibraryFilterTab.LIKED -> library.filter { it.isPositiveRating }
+            LibraryFilterTab.DISLIKED -> library.filter { it.isNegativeRating }
         }
     }
 
     val ownedCount = library.count { it.isOwned }
-    val ratedCount = library.count { it.rating != null }
     val backlogCount = library.count { it.isOwned && it.rating == null }
+    val ratedCount = library.count { it.rating != null }
 
     LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp)
+        modifier = modifier
+            .fillMaxSize()
+            .background(c.paper)
+            .windowInsetsPadding(WindowInsets.statusBars),
+        contentPadding = PaddingValues(bottom = 28.dp)
     ) {
-        // Editorial Taste Matrix Bento Card
-        item(key = "taste_bento") {
-            TasteProfileBentoCard(
-                tasteBars = tasteBars,
-                ownedCount = ownedCount,
-                backlogCount = backlogCount,
-                ratedCount = ratedCount,
-                geminiEnabled = state.settings.hasAnyAiKey(),
-                activeFilter = activeFilter,
-                onSelectStatFilter = { targetFilter ->
-                    activeFilter = if (activeFilter == targetFilter) LibraryFilter.ALL else targetFilter
-                },
-                onOpenAddGameSheet = onOpenAddGameSheet,
-                modifier = Modifier.padding(horizontal = 16.dp)
+        // Header: "Libreria" + gear icon + black "+ Aggiungi" pill
+        item(key = "header") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 12.dp, top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = stringResource(R.string.library_title),
+                    style = SpType.screenTitle,
+                    color = c.ink,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clickable(onClick = onOpenSettings),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Settings,
+                            contentDescription = stringResource(R.string.library_settings_cd),
+                            tint = c.ink,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .height(40.dp)
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(c.ink)
+                            .clickable(onClick = onOpenAddGameSheet)
+                            .padding(start = 10.dp, end = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = null,
+                            tint = c.paper,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = stringResource(R.string.library_add),
+                            style = SpType.tab.copy(fontWeight = FontWeight.Bold),
+                            color = c.paper
+                        )
+                    }
+                }
+            }
+        }
+
+        // Stat Trio
+        item(key = "stats") {
+            Spacer(modifier = Modifier.height(18.dp))
+            StatTrio(
+                owned = ownedCount,
+                backlog = backlogCount,
+                rated = ratedCount,
+                modifier = Modifier.padding(horizontal = 20.dp)
             )
         }
 
-        // Gamer Soul & Standalone AI Game Discovery Card
-        item(key = "gamer_soul_card") {
-            GamerSoulBentoCard(
-                soulProfile = state.settings.gamerSoulProfile,
-                discoveryCount = state.settings.discoveryPicks.size,
-                hasApiKey = state.settings.hasKeyFor(state.settings.soulTarget.provider),
-                hasLibrarySignals = library.isNotEmpty() || state.settings.userTastePrompt.isNotBlank(),
-                isGeneratingSoul = state.isGeneratingSoul,
-                isDiscoveringGames = state.isDiscoveringGames,
-                onGenerateSoul = onGenerateGamerSoul,
-                onOpenDiscovery = onOpenDiscoverySheet,
-                onRefreshDiscovery = onRefreshDiscoveryPicks,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
-            )
+        // Taste profile bars
+        if (tasteBars.isNotEmpty()) {
+            item(key = "taste_bars") {
+                Spacer(modifier = Modifier.height(16.dp))
+                Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                    SectionLabel(text = stringResource(R.string.library_taste_section))
+                    Spacer(modifier = Modifier.height(10.dp))
+                    TasteBars(bars = tasteBars)
+                }
+            }
         }
 
-        // Single-line sleek filter strip
-        item(key = "filter_strip") {
-            LibraryFilterStrip(
-                activeFilter = activeFilter,
-                onSelectFilter = { activeFilter = it },
-                modifier = Modifier.padding(top = 14.dp, bottom = 6.dp)
+        // Filter underline tabs
+        item(key = "filter_tabs") {
+            Spacer(modifier = Modifier.height(18.dp))
+            val tabLabels = listOf(
+                stringResource(R.string.library_filter_all),
+                stringResource(R.string.library_filter_owned),
+                stringResource(R.string.library_filter_backlog),
+                stringResource(R.string.library_filter_liked),
+                stringResource(R.string.library_filter_disliked)
+            )
+            UnderlineTabs(
+                items = tabLabels,
+                selectedIndex = activeFilter.ordinal,
+                onSelect = { idx -> activeFilter = LibraryFilterTab.entries[idx] },
+                scrollable = true,
+                horizontalPadding = 20.dp
             )
         }
 
         if (filteredItems.isEmpty()) {
-            item(key = "empty_state") {
-                LibraryEmptyState(
-                    hasAnyGames = library.isNotEmpty(),
-                    onOpenAddGameSheet = onOpenAddGameSheet,
-                    onResetFilter = { activeFilter = LibraryFilter.ALL },
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
-                )
+            item(key = "empty") {
+                Spacer(modifier = Modifier.height(12.dp))
+                if (library.isEmpty()) {
+                    EmptyState(
+                        title = stringResource(R.string.library_empty_title),
+                        body = stringResource(R.string.library_empty_body),
+                        actionLabel = stringResource(R.string.library_empty_cta),
+                        onAction = onOpenAddGameSheet,
+                        centered = false,
+                        modifier = Modifier
+                            .padding(horizontal = 20.dp)
+                            .background(c.bannerBg)
+                    )
+                } else {
+                    EmptyState(
+                        title = "Nessun gioco in questa scheda",
+                        body = "Cambia filtro per vedere il resto della libreria.",
+                        actionLabel = stringResource(R.string.library_filter_all),
+                        onAction = { activeFilter = LibraryFilterTab.ALL },
+                        outlinedCta = true
+                    )
+                }
             }
         } else {
-            itemsIndexed(
+            items(
                 items = filteredItems,
-                key = { _, item -> item.id }
-            ) { index, item ->
-                val isExpanded = expandedGameId == item.id
-                LibraryMatrixRow(
+                key = { it.id }
+            ) { item ->
+                SwipeRemoveLibraryRow(
                     game = item,
-                    expanded = isExpanded,
-                    onToggleExpand = {
-                        expandedGameId = if (isExpanded) null else item.id
-                    },
-                    onSetRating = { nextRating -> onSetGameRating(item, nextRating) },
-                    onToggleOwned = { onSetGameOwned(item, !item.isOwned) },
-                    onSetNote = { nextNote -> onSetGameNote(item, nextNote) },
-                    onSetTargetPrice = { target -> onSetGameTargetPrice(item, target) },
-                    onRemove = {
-                        if (expandedGameId == item.id) expandedGameId = null
-                        onRemoveGame(item.id)
-                    },
-                    onOpenEshop = item.eshopUrl?.let { url -> { onOpenEshop(url) } }
+                    sharedTransitionScope = sharedTransitionScope,
+                    animatedVisibilityScope = animatedVisibilityScope,
+                    onClick = { onOpenLibraryDetail(item) },
+                    onSwipeRemove = { onSwipeRemoveGame(item) },
+                    modifier = Modifier.animateItem(placementSpec = tween(240, easing = Motion.Out))
                 )
-                if (index < filteredItems.lastIndex) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        thickness = 0.8.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.48f)
-                    )
-                }
             }
         }
     }
-
-    if (showAddGameSheet) {
-        AddGameSearchSheet(
-            state = state,
-            onDismiss = onDismissAddGameSheet,
-            onSearchGames = onSearchGames,
-            onClearSearchResults = onClearSearchResults,
-            onSetGameRating = onSetGameRating,
-            onSetGameOwned = onSetGameOwned
-        )
-    }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
-private fun GamerSoulBentoCard(
-    soulProfile: GamerSoulProfile?,
-    discoveryCount: Int,
-    hasApiKey: Boolean,
-    hasLibrarySignals: Boolean,
-    isGeneratingSoul: Boolean,
-    isDiscoveringGames: Boolean,
-    onGenerateSoul: () -> Unit,
-    onOpenDiscovery: () -> Unit,
-    onRefreshDiscovery: () -> Unit,
+private fun SwipeRemoveLibraryRow(
+    game: LikedGame,
+    sharedTransitionScope: SharedTransitionScope,
+    animatedVisibilityScope: AnimatedVisibilityScope,
+    onClick: () -> Unit,
+    onSwipeRemove: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+    val c = SpTheme.colors
+    val view = LocalView.current
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val reduceMotion = LocalReduceMotion.current
+
+    val thresholdPx = with(density) { 96.dp.toPx() }
+    val dampStartPx = with(density) { 150.dp.toPx() }
+    val offsetX = remember { Animatable(0f) }
+    var armed by remember { mutableStateOf(false) }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min)
         ) {
+            if (offsetX.value < -2f) {
+                SwipeActionBackground(
+                    isRightSwipe = false,
+                    armed = armed,
+                    rightActionLabel = stringResource(R.string.action_remove),
+                    modifier = Modifier.matchParentSize()
+                )
+            }
+
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .offset { IntOffset(offsetX.value.roundToInt(), 0) }
+                    .background(c.paper)
+                    .clickable(onClick = onClick)
+                    .pointerInput(game.id) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                if (offsetX.value <= -thresholdPx) {
+                                    view.hapticConfirm()
+                                    scope.launch {
+                                        offsetX.animateTo(-size.width.toFloat(), Motion.exit(reduceMotion))
+                                        onSwipeRemove()
+                                        offsetX.snapTo(0f)
+                                    }
+                                } else {
+                                    scope.launch { offsetX.animateTo(0f, Motion.settle()) }
+                                }
+                                armed = false
+                            },
+                            onDragCancel = {
+                                armed = false
+                                scope.launch { offsetX.animateTo(0f, Motion.settle()) }
+                            },
+                            onHorizontalDrag = { _, dragAmount ->
+                                val rawNext = (offsetX.value + dragAmount).coerceAtMost(0f)
+                                val damped = if (abs(rawNext) > dampStartPx) {
+                                    -(dampStartPx + (abs(rawNext) - dampStartPx) * 0.35f)
+                                } else {
+                                    rawNext
+                                }
+                                val nowArmed = damped <= -thresholdPx
+                                if (nowArmed != armed) {
+                                    armed = nowArmed
+                                    if (nowArmed) view.hapticTick()
+                                }
+                                scope.launch { offsetX.snapTo(damped) }
+                            }
+                        )
+                    }
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                with(sharedTransitionScope) {
+                    Cover(
+                        url = game.imageUrl,
+                        title = game.title,
+                        radius = 3.dp,
+                        modifier = Modifier
+                            .width(80.dp)
+                            .sharedElement(
+                                sharedContentState = rememberSharedContentState(key = "library-${game.id}"),
+                                animatedVisibilityScope = animatedVisibilityScope,
+                                boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) }
+                            )
+                    )
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
+                    Text(
+                        text = game.title,
+                        style = SpType.rowTitle,
+                        color = c.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    val rating = game.rating
+                    val statusTag = when {
+                        game.isOwned && rating == null -> stringResource(R.string.library_tag_backlog)
+                        game.isOwned -> stringResource(R.string.library_tag_owned)
+                        game.targetPriceEur != null -> "< ${DealFilterEngine.formatEur(game.targetPriceEur)}"
+                        else -> null
+                    }
+                    val metaAnnotated = buildAnnotatedString {
+                        if (rating != null) {
+                            withStyle(SpanStyle(color = c.ink, letterSpacing = 1.sp)) {
+                                append("★".repeat(rating))
+                            }
+                            withStyle(SpanStyle(color = c.starDim, letterSpacing = 1.sp)) {
+                                append("★".repeat((5 - rating).coerceAtLeast(0)))
+                            }
+                        }
+                        if (statusTag != null) {
+                            withStyle(SpanStyle(color = c.muted)) {
+                                if (rating != null) append(" · ")
+                                append(statusTag)
+                            }
+                        }
+                    }
+                    if (metaAnnotated.isNotEmpty()) {
+                        Text(
+                            text = metaAnnotated,
+                            style = SpType.caption,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                if (!game.userNote.isNullOrBlank()) {
                     Icon(
-                        imageVector = Icons.Rounded.AutoAwesome,
-                        contentDescription = null,
-                        tint = EshopCrimson,
+                        imageVector = Icons.Rounded.ChatBubbleOutline,
+                        contentDescription = stringResource(R.string.library_has_comment_cd),
+                        tint = c.muted,
                         modifier = Modifier.size(18.dp)
                     )
-                    Text(
-                        text = "ANIMA DA VIDEOGIOCATORE · AI",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                if (soulProfile != null) {
-                    FilledTonalButton(
-                        onClick = onGenerateSoul,
-                        enabled = !isGeneratingSoul && hasApiKey && hasLibrarySignals,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.height(34.dp)
-                    ) {
-                        if (isGeneratingSoul) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Rounded.Refresh,
-                                contentDescription = "Aggiorna anima",
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                text = "Aggiorna",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (soulProfile == null) {
-                Text(
-                    text = "L'IA analizza i giochi nella tua libreria, i voti 1–5★, i commenti personali e le tue preferenze per estrapolare chi sei come videogiocatore.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                if (!hasApiKey) {
-                    Text(
-                        text = "Configura una chiave API (Gemini, OpenRouter o DeepSeek) in Impostazioni per sbloccare il profilo e i consigli personalizzati.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = EshopCrimson
-                    )
-                } else if (!hasLibrarySignals) {
-                    Text(
-                        text = "Aggiungi o vota almeno un titolo (oppure scrivi le tue preferenze qui sotto) per iniziare.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Button(
-                    onClick = onGenerateSoul,
-                    enabled = !isGeneratingSoul && hasApiKey && hasLibrarySignals,
-                    colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    if (isGeneratingSoul) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Analisi dell'anima in corso...")
-                    } else {
-                        Icon(
-                            imageVector = Icons.Rounded.AutoAwesome,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Estrai la tua Anima")
-                    }
-                }
-            } else {
-                Text(
-                    text = soulProfile.archetypeTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                Text(
-                    text = soulProfile.soulSummary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                if (soulProfile.corePillars.isNotEmpty()) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        soulProfile.corePillars.forEach { pillar ->
-                            Surface(
-                                shape = RoundedCornerShape(999.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                            ) {
-                                Text(
-                                    text = pillar,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                if (soulProfile.redFlags.isNotEmpty()) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        soulProfile.redFlags.forEach { flag ->
-                            Surface(
-                                shape = RoundedCornerShape(999.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
-                            ) {
-                                Text(
-                                    text = "✕ $flag",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Button(
-                        onClick = onOpenDiscovery,
-                        enabled = !isDiscoveringGames && hasApiKey,
-                        colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        if (isDiscoveringGames) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text("Cerco titoli su misura...")
-                        } else {
-                            Icon(
-                                imageVector = Icons.Rounded.AutoAwesome,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = if (discoveryCount == 0) {
-                                    "Consigliami 5–10 giochi"
-                                } else {
-                                    "Vedi $discoveryCount consigli per te"
-                                }
-                            )
-                        }
-                    }
-
-                    if (discoveryCount > 0) {
-                        FilledTonalButton(
-                            onClick = onRefreshDiscovery,
-                            enabled = !isDiscoveringGames && hasApiKey,
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Refresh,
-                                contentDescription = "Nuovi consigli",
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text("Nuovi")
-                        }
-                    }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun TasteProfileBentoCard(
-    tasteBars: List<TasteGenreBar>,
-    ownedCount: Int,
-    backlogCount: Int,
-    ratedCount: Int,
-    geminiEnabled: Boolean,
-    activeFilter: LibraryFilter,
-    onSelectStatFilter: (LibraryFilter) -> Unit,
-    onOpenAddGameSheet: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val goldAccent = if (isDark) WarmGoldDark else WarmGoldLight
-
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.55f else 0.7f)
+        HorizontalDivider(
+            thickness = 1.dp,
+            color = c.line,
+            modifier = Modifier.padding(horizontal = 20.dp)
         )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = if (geminiEnabled) {
-                        "PROFILO RACCOMANDAZIONI · GEMINI"
-                    } else {
-                        "PROFILO RACCOMANDAZIONI · LOCALE"
-                    },
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 0.7.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            if (tasteBars.isEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Valuta 1–5★ i tuoi titoli per visualizzare qui i generi che guidano i consigli.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    TextButton(
-                        onClick = onOpenAddGameSheet,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            text = "+ Cerca",
-                            color = EshopCrimson,
-                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
-                        )
-                    }
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    tasteBars.forEachIndexed { index, bar ->
-                        val barColor = when {
-                            !bar.isPositive -> MaterialTheme.colorScheme.onSurfaceVariant
-                            index == 0 -> EshopCrimson
-                            index == 1 -> EshopCrimsonSoft
-                            else -> BarAmber
-                        }
-                        TasteGenreBarRow(
-                            bar = bar,
-                            barColor = barColor,
-                            goldAccent = goldAccent
-                        )
-                    }
-                }
-            }
-
-            // Compact bottom stat pills inside the Bento card
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                BentoStatPill(
-                    text = "$ownedCount Posseduti",
-                    selected = activeFilter == LibraryFilter.OWNED,
-                    onClick = { onSelectStatFilter(LibraryFilter.OWNED) },
-                    modifier = Modifier.weight(1f)
-                )
-                BentoStatPill(
-                    text = "$backlogCount Da giocare",
-                    selected = activeFilter == LibraryFilter.BACKLOG,
-                    onClick = { onSelectStatFilter(LibraryFilter.BACKLOG) },
-                    modifier = Modifier.weight(1f)
-                )
-                BentoStatPill(
-                    text = "$ratedCount Votati",
-                    selected = activeFilter == LibraryFilter.LIKED,
-                    onClick = { onSelectStatFilter(LibraryFilter.LIKED) },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TasteGenreBarRow(
-    bar: TasteGenreBar,
-    barColor: Color,
-    goldAccent: Color
-) {
-    val animatedFraction by animateFloatAsState(
-        targetValue = (bar.percent / 100f).coerceIn(0.18f, 1f),
-        animationSpec = tween(durationMillis = 360),
-        label = "taste_bar_fill"
-    )
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text(
-            text = bar.label,
-            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.width(88.dp)
-        )
-
-        BoxWithConstraints(
-            modifier = Modifier
-                .weight(1f)
-                .height(20.dp)
-                .clip(RoundedCornerShape(999.dp))
-                .background(barColor.copy(alpha = 0.16f))
-        ) {
-            val showLabelInside = animatedFraction >= 0.34f
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(animatedFraction)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(barColor),
-                contentAlignment = Alignment.CenterEnd
-            ) {
-                if (showLabelInside) {
-                    val labelColor = if (barColor == BarAmber || barColor == EshopCrimsonSoft) {
-                        Color(0xFF14161B)
-                    } else {
-                        Color.White
-                    }
-                    Text(
-                        text = "${bar.percent}%",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
-                        ),
-                        color = labelColor,
-                        modifier = Modifier.padding(end = 8.dp),
-                        maxLines = 1
-                    )
-                }
-            }
-        }
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-            modifier = Modifier.width(46.dp)
-        ) {
-            Text(
-                text = String.format(Locale.US, "%.1f", bar.avgStars),
-                style = MaterialTheme.typography.bodySmall.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    fontFeatureSettings = "tnum"
-                ),
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Icon(
-                imageVector = Icons.Rounded.Star,
-                contentDescription = null,
-                tint = if (bar.isPositive) goldAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(13.dp)
-            )
-        }
-    }
-}
-
-@Composable
-private fun BentoStatPill(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val borderColor = if (selected) {
-        EshopCrimson.copy(alpha = 0.75f)
-    } else {
-        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)
-    }
-    val bgColor = if (selected) {
-        EshopCrimson.copy(alpha = 0.12f)
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerLow
-    }
-
-    Box(
-        modifier = modifier
-            .heightIn(min = 34.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(bgColor)
-            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-            color = if (selected) EshopCrimson else MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-@Composable
-private fun LibraryFilterStrip(
-    activeFilter: LibraryFilter,
-    onSelectFilter: (LibraryFilter) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        LibraryFilter.entries.forEach { filter ->
-            val selected = activeFilter == filter
-            val bg = if (selected) {
-                MaterialTheme.colorScheme.surfaceContainerHighest
-            } else {
-                Color.Transparent
-            }
-            val borderColor = if (selected) {
-                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-            } else {
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)
-            }
-
-            Box(
-                modifier = Modifier
-                    .heightIn(min = 36.dp)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(bg)
-                    .border(1.dp, borderColor, RoundedCornerShape(999.dp))
-                    .clickable { onSelectFilter(filter) }
-                    .padding(horizontal = 14.dp, vertical = 7.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = filter.label,
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                    ),
-                    color = if (selected) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun LibraryMatrixRow(
-    game: LikedGame,
-    expanded: Boolean,
-    onToggleExpand: () -> Unit,
-    onSetRating: (Int?) -> Unit,
-    onToggleOwned: () -> Unit,
-    onSetNote: (String?) -> Unit,
-    onSetTargetPrice: (Double?) -> Unit,
-    onRemove: () -> Unit,
-    onOpenEshop: (() -> Unit)?
-) {
-    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val goldStarColor = if (isDark) WarmGoldDark else WarmGoldLight
-    val keyboard = LocalSoftwareKeyboardController.current
-    var noteDraft by remember(game.id, game.userNote) { mutableStateOf(game.userNote.orEmpty()) }
-    val savedNote = game.userNote.orEmpty()
-    val isNoteDirty = noteDraft.trim() != savedNote.trim()
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onToggleExpand)
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Crisp vertical cover artwork thumbnail
-            Box(
-                modifier = Modifier
-                    .width(52.dp)
-                    .height(66.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .border(
-                        width = 0.8.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(10.dp)
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                if (!game.imageUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = game.imageUrl,
-                        contentDescription = game.title,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Rounded.CollectionsBookmark,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(14.dp))
-
-            // Title + metadata line
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
-            ) {
-                Text(
-                    text = game.title,
-                    style = MaterialTheme.typography.titleSmall.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                val genreText = game.steamTagNames
-                    .filter { it.isNotBlank() }
-                    .take(2)
-                    .joinToString(" · ")
-                    .ifBlank { game.gameCategories.take(2).joinToString(" · ") }
-                    .ifBlank { game.publisher }
-
-                val statusSuffix = when {
-                    game.isNegativeRating -> "Sconsigliato all'IA"
-                    game.isOwned && game.rating == null -> "Da giocare"
-                    !game.isOwned && game.targetPriceEur != null ->
-                        "Avviso < ${DealFilterEngine.formatEur(game.targetPriceEur)}"
-                    else -> null
-                }
-
-                val metaLine = listOfNotNull(
-                    genreText.takeIf { it.isNotBlank() },
-                    statusSuffix
-                ).joinToString(" · ")
-
-                if (metaLine.isNotBlank()) {
-                    Text(
-                        text = metaLine,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (game.isNegativeRating) {
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                val savedQuote = game.userNote?.trim()?.takeIf { it.isNotEmpty() }
-                if (savedQuote != null && !expanded) {
-                    Text(
-                        text = "\"$savedQuote\"",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(10.dp))
-
-            // Rating pill (tap to expand inline 5-star editor)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                val rating = game.rating
-                if (rating != null) {
-                    val pillBg = when {
-                        rating >= 4 -> WarmGoldDark.copy(alpha = if (isDark) 0.16f else 0.14f)
-                        rating == 3 -> MaterialTheme.colorScheme.surfaceContainerHighest
-                        else -> MaterialTheme.colorScheme.surfaceContainerHigh
-                    }
-                    val starColor = when {
-                        rating >= 4 -> goldStarColor
-                        rating == 3 -> MaterialTheme.colorScheme.primary
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(pillBg)
-                            .clickable(onClick = onToggleExpand)
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Star,
-                            contentDescription = null,
-                            tint = starColor,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = rating.toString(),
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontFeatureSettings = "tnum"
-                            ),
-                            color = if (rating >= 4) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .clickable(onClick = onToggleExpand)
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "Vota",
-                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Icon(
-                            imageVector = Icons.Rounded.Star,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
-                }
-
-                // 1-tap Owned Bookmark Toggle (44dp target)
-                IconButton(
-                    onClick = onToggleOwned,
-                    modifier = Modifier.size(44.dp)
-                ) {
-                    Icon(
-                        imageVector = if (game.isOwned) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
-                        contentDescription = if (game.isOwned) "Posseduto" else "Segna come posseduto",
-                        tint = if (game.isOwned) EshopCrimson else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-                        modifier = Modifier.size(21.dp)
-                    )
-                }
-            }
-        }
-
-        // Progressive inline rating, personal comment & quick-actions strip
-        AnimatedVisibility(
-            visible = expanded,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp, start = 66.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RatingStarBar(
-                        rating = game.rating,
-                        onSelectRating = { clicked ->
-                            onSetRating(if (clicked == game.rating) null else clicked)
-                        },
-                        starSize = 30.dp
-                    )
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        if (onOpenEshop != null) {
-                            IconButton(
-                                onClick = onOpenEshop,
-                                modifier = Modifier.size(40.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                    contentDescription = "Apri su eShop",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                        IconButton(
-                            onClick = onRemove,
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.DeleteOutline,
-                                contentDescription = "Rimuovi dalla libreria",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(19.dp)
-                            )
-                        }
-                    }
-                }
-
-                OutlinedTextField(
-                    value = noteDraft,
-                    onValueChange = { if (it.length <= 240) noteDraft = it },
-                    label = { Text("Perché questo voto? (commento per l'IA)") },
-                    placeholder = { Text("Es. adoro il combat tattico, troppo grinding...") },
-                    maxLines = 3,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            keyboard?.hide()
-                            if (isNoteDirty) {
-                                onSetNote(noteDraft.trim().takeIf { it.isNotEmpty() })
-                            }
-                        }
-                    ),
-                    trailingIcon = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (isNoteDirty) {
-                                IconButton(
-                                    onClick = {
-                                        keyboard?.hide()
-                                        onSetNote(noteDraft.trim().takeIf { it.isNotEmpty() })
-                                    }
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Check,
-                                        contentDescription = "Salva commento",
-                                        tint = EshopCrimson
-                                    )
-                                }
-                            }
-                            if (noteDraft.isNotBlank() || savedNote.isNotBlank()) {
-                                IconButton(
-                                    onClick = {
-                                        noteDraft = ""
-                                        if (savedNote.isNotBlank()) {
-                                            onSetNote(null)
-                                        }
-                                    }
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Clear,
-                                        contentDescription = "Cancella commento"
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                if (!game.isOwned) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        val currentTarget = game.targetPriceEur
-                        listOf(null to "Nessun avviso", 20.0 to "< 20 €", 15.0 to "< 15 €", 10.0 to "< 10 €", 5.0 to "< 5 €").forEach { (preset, label) ->
-                            val selected = if (preset == null) {
-                                currentTarget == null
-                            } else {
-                                currentTarget != null && kotlin.math.abs(currentTarget - preset) < 0.05
-                            }
-                            FilterChip(
-                                selected = selected,
-                                onClick = { onSetTargetPrice(preset) },
-                                label = { Text(label, fontSize = 11.sp) }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun LibraryEmptyState(
-    hasAnyGames: Boolean,
-    onOpenAddGameSheet: () -> Unit,
-    onResetFilter: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
-    ) {
-        Column(
-            modifier = Modifier.padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.CollectionsBookmark,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(30.dp)
-            )
-            Text(
-                text = if (!hasAnyGames) {
-                    "La tua Libreria è vuota"
-                } else {
-                    "Nessun titolo in questo filtro"
-                },
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
-            )
-            Text(
-                text = if (!hasAnyGames) {
-                    "Aggiungi i giochi che hai giocato o possiedi per escluderli dagli sconti e calibrare il profilo gusto."
-                } else {
-                    "Cambia filtro sopra o cerca un nuovo titolo Switch da aggiungere alla collezione."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            if (!hasAnyGames) {
-                Button(
-                    onClick = onOpenAddGameSheet,
-                    shape = RoundedCornerShape(999.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = EshopCrimson,
-                        contentColor = Color.White
-                    )
-                ) {
-                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Aggiungi gioco")
-                }
-            } else {
-                OutlinedButton(
-                    onClick = onResetFilter,
-                    shape = RoundedCornerShape(999.dp)
-                ) {
-                    Text("Mostra tutti")
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AddGameSearchSheet(
-    state: MainUiState,
-    onDismiss: () -> Unit,
-    onSearchGames: (String) -> Unit,
-    onClearSearchResults: () -> Unit,
-    onSetGameRating: (LikedGame, Int?) -> Unit,
-    onSetGameOwned: (LikedGame, Boolean) -> Unit
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var searchInput by remember { mutableStateOf("") }
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    val existingByNormTitle = remember(state.settings.likedGames) {
-        state.settings.likedGames.associateBy { DealTitleNormalizer.normalize(it.title) }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Text(
-                text = "Aggiungi alla Libreria",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-            )
-            Text(
-                text = "Cerca titoli Switch / Switch 2 su eShop: dai un voto da 1 a 5★ oppure segnali come già posseduti.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = searchInput,
-                    onValueChange = { searchInput = it },
-                    placeholder = { Text("Es. Hades, Zelda, Balatro...") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(999.dp),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(
-                        onSearch = {
-                            if (searchInput.trim().length >= 2) {
-                                keyboardController?.hide()
-                                onSearchGames(searchInput)
-                            }
-                        }
-                    ),
-                    trailingIcon = {
-                        if (searchInput.isNotEmpty() || state.profileSearchResults.isNotEmpty()) {
-                            IconButton(
-                                onClick = {
-                                    searchInput = ""
-                                    onClearSearchResults()
-                                }
-                            ) {
-                                Icon(Icons.Rounded.Clear, contentDescription = "Pulisci ricerca")
-                            }
-                        }
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-
-                FilledTonalButton(
-                    onClick = {
-                        keyboardController?.hide()
-                        onSearchGames(searchInput)
-                    },
-                    enabled = !state.isSearchingProfile && searchInput.trim().length >= 2,
-                    shape = RoundedCornerShape(999.dp),
-                    modifier = Modifier.height(50.dp)
-                ) {
-                    if (state.isSearchingProfile) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(
-                            imageVector = Icons.Rounded.Search,
-                            contentDescription = "Cerca",
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            }
-
-            if (state.profileSearchResults.isNotEmpty()) {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 380.dp)
-                ) {
-                    itemsIndexed(
-                        items = state.profileSearchResults,
-                        key = { _, candidate -> candidate.id }
-                    ) { idx, candidate ->
-                        val saved = existingByNormTitle[DealTitleNormalizer.normalize(candidate.title)]
-                        val effectiveRating = saved?.rating
-                        val effectiveOwned = saved?.isOwned == true
-
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 10.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(46.dp)
-                                        .height(58.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (!candidate.imageUrl.isNullOrBlank()) {
-                                        AsyncImage(
-                                            model = candidate.imageUrl,
-                                            contentDescription = candidate.title,
-                                            modifier = Modifier.fillMaxSize(),
-                                            contentScale = ContentScale.Crop
-                                        )
-                                    } else {
-                                        Icon(
-                                            Icons.Rounded.CollectionsBookmark,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = candidate.title,
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    val tags = candidate.steamTagNames.filter { it.isNotBlank() }.take(3)
-                                        .ifEmpty { candidate.gameCategories.take(2) }
-                                    val meta = listOfNotNull(
-                                        candidate.publisher.takeIf { it.isNotBlank() },
-                                        tags.joinToString(" · ").takeIf { it.isNotBlank() }
-                                    ).joinToString(" · ")
-                                    if (meta.isNotBlank()) {
-                                        Text(
-                                            text = meta,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-
-                                IconButton(
-                                    onClick = { onSetGameOwned(saved ?: candidate, !effectiveOwned) },
-                                    modifier = Modifier.size(44.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = if (effectiveOwned) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
-                                        contentDescription = if (effectiveOwned) "Posseduto" else "Segna come posseduto",
-                                        tint = if (effectiveOwned) EshopCrimson else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                RatingStarBar(
-                                    rating = effectiveRating,
-                                    onSelectRating = { star ->
-                                        val next = if (star == effectiveRating) null else star
-                                        onSetGameRating(saved ?: candidate, next)
-                                    },
-                                    starSize = 28.dp
-                                )
-                                if (effectiveOwned) {
-                                    Text(
-                                        text = "Posseduto",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = EshopCrimson
-                                    )
-                                }
-                            }
-                        }
-
-                        if (idx < state.profileSearchResults.lastIndex) {
-                            HorizontalDivider(
-                                thickness = 0.8.dp,
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.48f)
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
 }

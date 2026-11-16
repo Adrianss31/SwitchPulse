@@ -18,6 +18,7 @@ import com.switchpulse.app.data.model.AiTaskTarget
 import com.switchpulse.app.data.model.BackgroundRerankPolicy
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealTitleNormalizer
+import com.switchpulse.app.data.model.FeedSortMode
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
 import com.switchpulse.app.data.model.GamerSoulProfile
@@ -78,6 +79,14 @@ class PreferencesStore(
             runCatching { json.decodeFromString<List<String>>(raw) }.getOrDefault(emptyList())
         }.orEmpty()
 
+        val previousFeedOrder = prefs[KEY_PREVIOUS_FEED_ORDER_JSON]?.takeIf { it.isNotBlank() }?.let { raw ->
+            runCatching { json.decodeFromString<List<String>>(raw) }.getOrDefault(emptyList())
+        }.orEmpty()
+
+        val feedSortMode = runCatching {
+            FeedSortMode.valueOf(prefs[KEY_FEED_SORT_MODE].orEmpty())
+        }.getOrDefault(FeedSortMode.PERSONAL)
+
         val availableModels = readModelsList(prefs[KEY_AVAILABLE_GEMINI_MODELS_JSON])
         val openRouterModels = readModelsList(prefs[KEY_AVAILABLE_OPENROUTER_MODELS_JSON])
         val deepSeekModels = readModelsList(prefs[KEY_AVAILABLE_DEEPSEEK_MODELS_JSON])
@@ -91,6 +100,9 @@ class PreferencesStore(
             minRegularPriceEur = prefs[KEY_MIN_REGULAR_EUR] ?: 10f,
             appPlatformFilter = parsePlatformFilter(prefs[KEY_APP_PLATFORM]),
             widgetPlatformFilter = parsePlatformFilter(prefs[KEY_WIDGET_PLATFORM]),
+            feedSortMode = feedSortMode,
+            expiringSoonOnly = prefs[KEY_EXPIRING_SOON_ONLY] ?: false,
+            previousFeedOrder = previousFeedOrder,
             syncIntervalHours = prefs[KEY_SYNC_INTERVAL_HOURS] ?: 12,
             backgroundRerankPolicy = BackgroundRerankPolicy.fromName(prefs[KEY_BACKGROUND_RERANK_POLICY]),
             blacklistIds = prefs[KEY_BLACKLIST_IDS] ?: emptySet(),
@@ -221,6 +233,20 @@ class PreferencesStore(
 
     suspend fun updateWidgetPlatformFilter(filter: PlatformFilter) {
         context.dataStore.edit { it[KEY_WIDGET_PLATFORM] = filter.name }
+    }
+
+    suspend fun updateFeedSortMode(sortMode: FeedSortMode) {
+        context.dataStore.edit { it[KEY_FEED_SORT_MODE] = sortMode.name }
+    }
+
+    suspend fun updateExpiringSoonOnly(enabled: Boolean) {
+        context.dataStore.edit { it[KEY_EXPIRING_SOON_ONLY] = enabled }
+    }
+
+    suspend fun savePreviousFeedOrder(ids: List<String>) {
+        context.dataStore.edit {
+            it[KEY_PREVIOUS_FEED_ORDER_JSON] = json.encodeToString(ids.take(40))
+        }
     }
 
     suspend fun updateSyncIntervalHours(hours: Int) {
@@ -614,6 +640,10 @@ class PreferencesStore(
         context.dataStore.edit { prefs ->
             prefs[KEY_MIN_DISCOUNT] = 30
             prefs[KEY_MIN_REGULAR_EUR] = 10f
+            prefs[KEY_RECOMMENDATION_WEIGHT] = 50
+            prefs[KEY_FOR_YOU_MODE] = false
+            prefs[KEY_EXPIRING_SOON_ONLY] = false
+            prefs[KEY_FEED_SORT_MODE] = FeedSortMode.PERSONAL.name
             prefs[KEY_APP_PLATFORM] = PlatformFilter.ALL.name
         }
     }
@@ -661,5 +691,8 @@ class PreferencesStore(
         private val KEY_AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
         private val KEY_LAST_SYNC_MS = longPreferencesKey("last_sync_ms")
         private val KEY_CACHED_DEALS_JSON = stringPreferencesKey("cached_deals_json")
+        private val KEY_FEED_SORT_MODE = stringPreferencesKey("feed_sort_mode")
+        private val KEY_EXPIRING_SOON_ONLY = booleanPreferencesKey("expiring_soon_only")
+        private val KEY_PREVIOUS_FEED_ORDER_JSON = stringPreferencesKey("previous_feed_order_json")
     }
 }

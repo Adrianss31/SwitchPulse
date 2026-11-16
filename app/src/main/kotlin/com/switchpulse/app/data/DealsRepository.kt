@@ -1,7 +1,10 @@
 package com.switchpulse.app.data
 
 import android.content.Context
+import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.appwidget.updateAll
+import androidx.glance.state.PreferencesGlanceStateDefinition
 import com.switchpulse.app.data.local.CachedSteamLookup
 import com.switchpulse.app.data.local.CoverBitmapCache
 import com.switchpulse.app.data.local.PreferencesStore
@@ -23,7 +26,8 @@ import com.switchpulse.app.data.remote.GroundingBlockStore
 import com.switchpulse.app.data.remote.NintendoEshopClient
 import com.switchpulse.app.data.remote.SemanticRerankEntry
 import com.switchpulse.app.data.remote.SteamLookupCache
-import com.switchpulse.app.widget.EditorialBentoWidget
+import com.switchpulse.app.widget.CarouselWidget
+import com.switchpulse.app.widget.TopCoverWidget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -90,8 +94,23 @@ class DealsRepository(
     ): Result<List<Deal>> {
         return runCatching {
             val settings = preferences.getSettings()
+            val cachedBefore = preferences.getCachedDeals()
+            if (cachedBefore.isNotEmpty()) {
+                val previousVisibleIds = DealFilterEngine
+                    .filterAllEligible(cachedBefore, settings, settings.appPlatformFilter)
+                    .take(APP_FEED_LIMIT)
+                    .map { it.id }
+                preferences.savePreviousFeedOrder(previousVisibleIds)
+            }
+            val prevPriceById = cachedBefore.associate { it.id to it.discountedPriceEur }
+
             val fetchedDeals = eshopClient.fetchPopularDeals(likedGames = settings.likedGames)
-            val annotatedDeals = preferences.database.recordAndAnnotatePriceHistory(fetchedDeals)
+            val withPrevPrices = fetchedDeals.map { deal ->
+                val prevPrice = prevPriceById[deal.id]
+                    ?.takeIf { kotlin.math.abs(it - deal.discountedPriceEur) >= 0.01 }
+                if (prevPrice != null) deal.copy(previousDiscountedPriceEur = prevPrice) else deal
+            }
+            val annotatedDeals = preferences.database.recordAndAnnotatePriceHistory(withPrevPrices)
 
             val freshDeals = applyAiWithPerDealCache(
                 deals = annotatedDeals,
@@ -102,7 +121,7 @@ class DealsRepository(
 
             val now = System.currentTimeMillis()
             preferences.saveCachedDeals(freshDeals, now)
-            updateWidgetForSettings(freshDeals, settings)
+            updateWidgetForSettings(freshDeals, settings, resetCarouselRank = true)
             freshDeals
         }
     }
@@ -508,7 +527,11 @@ class DealsRepository(
         updateWidgetForSettings(deals, settings)
     }
 
-    private suspend fun updateWidgetForSettings(deals: List<Deal>, settings: FilterSettings) {
+    private suspend fun updateWidgetForSettings(
+        deals: List<Deal>,
+        settings: FilterSettings,
+        resetCarouselRank: Boolean = false
+    ) {
         val widgetTop = DealFilterEngine.filterTopTen(
             rawDeals = deals,
             settings = settings,
@@ -516,7 +539,21 @@ class DealsRepository(
             limit = WIDGET_FEED_LIMIT
         )
         coverCache.prefetchCovers(widgetTop.map { it.id to it.imageUrl })
-        EditorialBentoWidget().updateAll(context)
+        if (resetCarouselRank) {
+            runCatching {
+                val manager = GlanceAppWidgetManager(context)
+                val ids = manager.getGlanceIds(CarouselWidget::class.java)
+                ids.forEach { glanceId ->
+                    updateAppWidgetState(context, PreferencesGlanceStateDefinition, glanceId) { prefs ->
+                        prefs.toMutablePreferences().apply {
+                            this[CarouselWidget.KEY_ACTIVE_RANK] = 1
+                        }
+                    }
+                }
+            }
+        }
+        TopCoverWidget().updateAll(context)
+        CarouselWidget().updateAll(context)
     }
 
     companion object {

@@ -1,4 +1,171 @@
 <resources>
     <string name="app_name">SwitchPulse</string>
+    <string name="widget_w1_label">Top 10 · Copertina</string>
+    <string name="widget_w12_label">Top 10 · Carosello</string>
     <string name="widget_description">Top 10 offerte Nintendo Switch e Switch 2 dall’eShop Italia</string>
+    <string name="widget_carousel_description">Carosello interattivo Top 10 offerte Nintendo eShop Italia</string>
+    <string name="widget_pill_top10">Top 10 eShop</string>
+    <string name="widget_empty_prompt">Apri SwitchPulse per caricare le offerte</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_ranking">Classifica</string>
+    <string name="nav_for_you">Per te</string>
+    <string name="nav_library">Libreria</string>
+
+    <!-- Common -->
+    <string name="action_close">Chiudi</string>
+    <string name="action_back">Indietro</string>
+    <string name="action_cancel">Annulla</string>
+    <string name="action_undo">Annulla</string>
+    <string name="action_save">Salva</string>
+    <string name="action_clear">Svuota</string>
+    <string name="action_retry">Riprova</string>
+    <string name="action_refresh">Aggiorna</string>
+    <string name="action_restore">Ripristina</string>
+    <string name="action_remove">Rimuovi</string>
+
+    <!-- Classifica -->
+    <string name="ranking_title">La classifica</string>
+    <string name="ranking_search_placeholder">Cerca titolo, studio o genere…</string>
+    <string name="ranking_platform_all">Tutte</string>
+    <string name="ranking_platform_sw2">Switch 2</string>
+    <string name="ranking_platform_sw1">Switch</string>
+    <string name="ranking_sort_personal">Per te</string>
+    <string name="ranking_sort_discount">Sconto</string>
+    <string name="ranking_sort_price">Prezzo</string>
+    <string name="ranking_swipe_owned">Ce l’ho</string>
+    <string name="ranking_swipe_hide">Nascondi</string>
+    <string name="ranking_not_for_you">Non fa per te</string>
+    <string name="ranking_search_cd">Cerca</string>
+    <string name="ranking_filters_cd">Filtri e ordinamento</string>
+    <string name="ranking_snackbar_hidden">“%1$s” nascosto</string>
+    <string name="ranking_snackbar_owned">“%1$s” è nei tuoi giochi</string>
+    <string name="ranking_banner_incomplete_ai">%1$d offerte non hanno ancora un punteggio per te.</string>
+    <string name="ranking_banner_complete">Completa</string>
+    <string name="ranking_banner_ai_error">Non riesco a calcolare i punteggi per te.</string>
+    <string name="ranking_banner_offline">Sei offline: vedi le offerte delle %1$s.</string>
+    <string name="ranking_banner_update">Nuova versione %1$s</string>
+    <string name="ranking_banner_install">Installa</string>
+    <string name="ranking_empty_filter_title">Nessuna offerta con questi filtri</string>
+    <string name="ranking_empty_filter_body">Prova ad abbassare lo sconto minimo.</string>
+    <string name="ranking_empty_filter_cta">Ripristina filtri</string>
+    <string name="ranking_empty_search_title">Nessun gioco per “%1$s”</string>
+    <string name="ranking_empty_search_cta">Svuota la ricerca</string>
+
+    <!-- Filtri -->
+    <string name="filters_title">Filtri</string>
+    <string name="filters_reset">Ripristina</string>
+    <string name="filters_sort_section">Ordina per</string>
+    <string name="filters_for_you_title">Solo giochi adatti a me</string>
+    <string name="filters_for_you_subtitle">Nasconde i titoli che l’IA ti sconsiglia</string>
+    <string name="filters_expiring_title">Solo in scadenza (&lt; 48h)</string>
+    <string name="filters_expiring_subtitle">Mostra soltanto le offerte che terminano presto</string>
+    <string name="filters_min_discount">Sconto minimo</string>
+    <string name="filters_min_price">Prezzo pieno di almeno</string>
+    <string name="filters_min_price_help">Esclude i giochi molto economici, spesso di bassa qualità.</string>
+    <string name="filters_taste_weight">Peso dei tuoi gusti</string>
+    <string name="filters_taste_weight_help" formatted="false">A 0% conta solo la popolarità, a 100% solo quanto un gioco fa per te.</string>
+    <string name="filters_hidden_games">Giochi nascosti</string>
+    <string name="filters_show_count">Mostra %1$d offerte</string>
+    <string name="hidden_games_empty">Nessun gioco nascosto. Scorri una riga verso sinistra nella classifica per nasconderla.</string>
+
+    <!-- Scheda gioco -->
+    <string name="detail_close_cd">Chiudi la scheda</string>
+    <string name="detail_open_eshop">Apri su Nintendo eShop</string>
+    <string name="detail_owned_ask">Ce l’ho già?</string>
+    <string name="detail_owned_yes">Ce l’ho</string>
+    <string name="detail_hide">Nascondi</string>
+    <string name="detail_add_to_library">Aggiungi alla libreria</string>
+    <string name="detail_dismiss_pick">Scarta consiglio</string>
+    <string name="detail_for_you_label">Per te</string>
+    <string name="detail_metacritic">Metacritic</string>
+    <string name="detail_metacritic_pc">Metacritic PC</string>
+    <string name="detail_duration">Durata</string>
+    <string name="detail_duration_est">Durata · stima</string>
+    <string name="detail_steam">Steam</string>
+    <string name="detail_your_rating">Il tuo voto</string>
+    <string name="detail_add_comment">Aggiungi un commento</string>
+    <string name="detail_edit_comment">Modifica commento</string>
+    <string name="detail_comment_placeholder">Perché questo voto? Lo leggerà l’IA</string>
+    <string name="detail_price_alert_title">Avviso prezzo wishlist</string>
+    <string name="detail_price_alert_active">Avviso sotto %1$s</string>
+    <string name="detail_how_scored">Come è calcolato il punteggio</string>
+    <string name="detail_similar_high">Simile ai tuoi 4–5★</string>
+    <string name="detail_similar_low">Simile ai tuoi 1–2★</string>
+    <string name="detail_recalculate">Ricalcola</string>
+    <string name="detail_historical_low">Minimo storico</string>
+
+    <!-- Rating labels -->
+    <string name="rating_1">Non fa per me</string>
+    <string name="rating_2">Non mi è piaciuto</string>
+    <string name="rating_3">Così così</string>
+    <string name="rating_4">Mi è piaciuto</string>
+    <string name="rating_5">Lo adoro</string>
+    <string name="rating_popover_title">Il tuo voto per %1$s</string>
+
+    <!-- Per te -->
+    <string name="for_you_title">Per te</string>
+    <string name="for_you_soul_section">La tua anima da giocatore</string>
+    <string name="for_you_seek">Cerchi</string>
+    <string name="for_you_avoid">Eviti</string>
+    <string name="for_you_your_words">Le tue parole</string>
+    <string name="for_you_words_empty">Racconta cosa cerchi in un gioco</string>
+    <string name="for_you_edit">Modifica</string>
+    <string name="for_you_discover_title">Da scoprire</string>
+    <string name="for_you_discover_subtitle">Giochi fuori dalla classifica, anche a prezzo pieno.</string>
+    <string name="for_you_discover_more">Altri 7 consigli</string>
+    <string name="for_you_no_ai_title">Scopri che giocatore sei</string>
+    <string name="for_you_no_ai_body">Collega un servizio AI per avere la tua anima da giocatore, i consigli fuori dalle offerte e un punteggio per ogni gioco. Gemini ha un piano gratuito.</string>
+    <string name="for_you_no_ai_cta">Collega un servizio AI</string>
+
+    <!-- Libreria -->
+    <string name="library_title">Libreria</string>
+    <string name="library_settings_cd">Impostazioni</string>
+    <string name="library_add">Aggiungi</string>
+    <string name="library_stat_owned">ce l’ho</string>
+    <string name="library_stat_backlog">da giocare</string>
+    <string name="library_stat_rated">votati</string>
+    <string name="library_taste_section">Cosa guida i tuoi consigli</string>
+    <string name="library_filter_all">Tutti</string>
+    <string name="library_filter_owned">Ce l’ho</string>
+    <string name="library_filter_backlog">Da giocare</string>
+    <string name="library_filter_liked">Mi piacciono</string>
+    <string name="library_filter_disliked">Non mi piacciono</string>
+    <string name="library_tag_owned">Ce l’ho</string>
+    <string name="library_tag_backlog">Da giocare</string>
+    <string name="library_has_comment_cd">Ha un commento</string>
+    <string name="library_empty_title">Vota 3 giochi che conosci</string>
+    <string name="library_empty_body">Bastano pochi voti perché la classifica inizi a parlare di te.</string>
+    <string name="library_empty_cta">Aggiungi un gioco</string>
+
+    <!-- Aggiungi un gioco -->
+    <string name="add_game_title">Aggiungi un gioco</string>
+    <string name="add_game_search_hint">Cerca su eShop</string>
+    <string name="add_game_search_help">Cerca tra i giochi Switch e Switch 2, anche non in offerta.</string>
+    <string name="add_game_note_prompt">Perché questo voto?</string>
+    <string name="add_game_note_help">Aiuta l’IA a capirti</string>
+    <string name="add_game_cta">Aggiungi alla libreria</string>
+    <string name="add_game_added">Aggiunto</string>
+
+    <!-- Impostazioni -->
+    <string name="settings_title">Impostazioni</string>
+    <string name="settings_group_ai">Intelligenza artificiale</string>
+    <string name="settings_group_widget">Widget</string>
+    <string name="settings_group_deals">Offerte</string>
+    <string name="settings_group_app">App</string>
+    <string name="settings_connected">Collegato</string>
+    <string name="settings_not_connected">Non collegato</string>
+    <string name="settings_models_row">Modelli per ogni attività</string>
+    <string name="settings_models_sub">Classifica, schede gioco, anima</string>
+    <string name="settings_models_auto">Automatico</string>
+    <string name="settings_models_custom">Personalizzato</string>
+    <string name="settings_rerank_now">Ricalcola la classifica ora</string>
+    <string name="settings_bg_ai">Analisi AI in background</string>
+    <string name="settings_widget_pin">Aggiungi alla schermata Home</string>
+    <string name="settings_widget_platform">Piattaforma nel widget</string>
+    <string name="settings_sync_auto">Aggiorna automaticamente</string>
+    <string name="settings_updates_notify">Avvisami delle nuove versioni</string>
+    <string name="settings_backup_export">Esporta backup JSON</string>
+    <string name="settings_backup_import">Ripristina backup JSON</string>
+    <string name="settings_advanced">Avanzate</string>
 </resources>

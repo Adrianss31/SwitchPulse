@@ -3,6 +3,7 @@ package com.switchpulse.app.data
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealMatchSentiment
 import com.switchpulse.app.data.model.DealTitleNormalizer
+import com.switchpulse.app.data.model.FeedSortMode
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.Platform
 import com.switchpulse.app.data.model.PlatformFilter
@@ -37,12 +38,51 @@ object DealFilterEngine {
         platformOverride: PlatformFilter = settings.appPlatformFilter
     ): List<Deal> {
         val recommended = RecommendationEngine.applyRecommendations(rawDeals, settings)
-        return rankEligibleDeals(
+        val ranked = rankEligibleDeals(
             scoredDeals = recommended,
             settings = settings,
             platformOverride = platformOverride,
-            limit = Int.MAX_VALUE
+            limit = Int.MAX_VALUE,
+            applyFeedOnlyFilters = true
         )
+        return sortFeedDeals(ranked, settings.feedSortMode)
+    }
+
+    fun sortFeedDeals(deals: List<Deal>, sortMode: FeedSortMode): List<Deal> = when (sortMode) {
+        FeedSortMode.PERSONAL -> deals
+        FeedSortMode.DISCOUNT -> deals.sortedWith(
+            compareByDescending<Deal> { it.discountPercent }
+                .thenByDescending { if (it.personalScore > 0.0) it.personalScore else it.hotScore }
+        )
+        FeedSortMode.PRICE_ASC -> deals.sortedWith(
+            compareBy<Deal> { it.discountedPriceEur }
+                .thenByDescending { if (it.personalScore > 0.0) it.personalScore else it.hotScore }
+        )
+    }
+
+    fun countFeedMatches(
+        rawDeals: List<Deal>,
+        settings: FilterSettings,
+        limit: Int = 30
+    ): Int = filterAllEligible(rawDeals, settings, settings.appPlatformFilter).take(limit).size
+
+    /**
+     * Computes rank changes between [previousIds] (captured before a data refresh) and [currentIds].
+     * Positive delta means the game climbed up in rank (e.g., 5 -> 3 yields +2).
+     */
+    fun computeRankDeltas(
+        currentIds: List<String>,
+        previousIds: List<String>
+    ): Map<String, Int> {
+        if (previousIds.isEmpty() || currentIds.isEmpty()) return emptyMap()
+        val prevIndexById = previousIds.withIndex().associate { it.value to it.index }
+        val result = HashMap<String, Int>(currentIds.size)
+        currentIds.forEachIndexed { currentIdx, id ->
+            val prevIdx = prevIndexById[id] ?: return@forEachIndexed
+            val delta = prevIdx - currentIdx
+            if (delta != 0) result[id] = delta
+        }
+        return result
     }
 
     /**
@@ -71,7 +111,8 @@ object DealFilterEngine {
         scoredDeals: List<Deal>,
         settings: FilterSettings,
         platformOverride: PlatformFilter,
-        limit: Int
+        limit: Int,
+        applyFeedOnlyFilters: Boolean = false
     ): List<Deal> {
         val hasScores = scoredDeals.any { it.hotScore > 0.0 || it.personalScore > 0.0 }
         val ownedGames = settings.likedGames.filter { it.isOwned }
@@ -86,6 +127,9 @@ object DealFilterEngine {
             }
             .filter { deal ->
                 !settings.forYouOnlyMode || deal.matchSentiment != DealMatchSentiment.DISCOURAGED
+            }
+            .filter { deal ->
+                !applyFeedOnlyFilters || !settings.expiringSoonOnly || isUrgentExpiry(deal.endsAtIso)
             }
             .filter { deal -> deal.discountPercent >= settings.minDiscountPercent }
             .filter { deal -> deal.regularPriceEur >= settings.minRegularPriceEur }

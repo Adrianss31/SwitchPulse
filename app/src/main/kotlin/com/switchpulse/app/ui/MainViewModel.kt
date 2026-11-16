@@ -5,11 +5,16 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.switchpulse.app.BuildConfig
 import com.switchpulse.app.SwitchPulseApp
+import com.switchpulse.app.data.DealFilterEngine
 import com.switchpulse.app.data.local.BackupManager
+import com.switchpulse.app.data.model.AiDiscoveryPick
 import com.switchpulse.app.data.model.AiProvider
 import com.switchpulse.app.data.model.BackgroundRerankPolicy
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.DealTitleNormalizer
+import com.switchpulse.app.data.model.FeedSortMode
 import com.switchpulse.app.data.model.FilterSettings
+import com.switchpulse.app.data.model.GameDetailModel
 import com.switchpulse.app.data.model.GameExternalInsights
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.PlatformFilter
@@ -41,14 +46,18 @@ sealed interface UpdateUiState {
 data class MainUiState(
     val deals: List<Deal> = emptyList(),
     val allEligibleDeals: List<Deal> = emptyList(),
+    val rawCachedDeals: List<Deal> = emptyList(),
+    val rankDeltas: Map<String, Int> = emptyMap(),
     val settings: FilterSettings = FilterSettings(),
     val isRefreshing: Boolean = false,
+    val isOfflineFallback: Boolean = false,
     val errorMessage: String? = null,
     val updateState: UpdateUiState = UpdateUiState.Idle,
     val statusMessage: String? = null,
     val profileSearchResults: List<LikedGame> = emptyList(),
     val isSearchingProfile: Boolean = false,
     val selectedDeal: Deal? = null,
+    val selectedDetail: GameDetailModel? = null,
     val detailInsights: GameExternalInsights? = null,
     val isLoadingInsights: Boolean = false,
     val geminiTestResult: String? = null,
@@ -61,12 +70,15 @@ data class MainUiState(
 
 private data class TransientUiState(
     val isRefreshing: Boolean = false,
+    val isOfflineFallback: Boolean = false,
+    val showRankDeltas: Boolean = false,
     val errorMessage: String? = null,
     val updateState: UpdateUiState = UpdateUiState.Idle,
     val statusMessage: String? = null,
     val profileSearchResults: List<LikedGame> = emptyList(),
     val isSearchingProfile: Boolean = false,
     val selectedDeal: Deal? = null,
+    val selectedDetail: GameDetailModel? = null,
     val detailInsights: GameExternalInsights? = null,
     val isLoadingInsights: Boolean = false,
     val geminiTestResult: String? = null,
@@ -90,25 +102,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<MainUiState> = combine(
         repository.filteredAppDealsFlow,
         repository.allEligibleDealsFlow,
+        repository.cachedDealsFlow,
         repository.settingsFlow,
         transientState
-    ) { deals, allEligibleDeals, settings, transient ->
+    ) { deals, allEligibleDeals, rawCachedDeals, settings, transient ->
         val freshSelected = transient.selectedDeal?.let { sel ->
             allEligibleDeals.firstOrNull { it.id == sel.id }
                 ?: deals.firstOrNull { it.id == sel.id }
                 ?: sel
         }
+        val freshDetail = transient.selectedDetail?.let { detail ->
+            val matchingDeal = allEligibleDeals.firstOrNull {
+                it.id == detail.id || DealTitleNormalizer.normalize(it.title) == detail.normalizedTitle
+            } ?: deals.firstOrNull {
+                it.id == detail.id || DealTitleNormalizer.normalize(it.title) == detail.normalizedTitle
+            }
+            if (matchingDeal != null && detail.sourceDeal != null) {
+                GameDetailModel.fromDeal(matchingDeal, detail.rank, detail.sharedCoverKey)
+            } else {
+                detail
+            }
+        }
+        val deltas = if (transient.showRankDeltas) {
+            DealFilterEngine.computeRankDeltas(deals.map { it.id }, settings.previousFeedOrder)
+        } else {
+            emptyMap()
+        }
         MainUiState(
             deals = deals,
             allEligibleDeals = allEligibleDeals,
+            rawCachedDeals = rawCachedDeals,
+            rankDeltas = deltas,
             settings = settings,
             isRefreshing = transient.isRefreshing,
+            isOfflineFallback = transient.isOfflineFallback,
             errorMessage = transient.errorMessage,
             updateState = transient.updateState,
             statusMessage = transient.statusMessage,
             profileSearchResults = transient.profileSearchResults,
             isSearchingProfile = transient.isSearchingProfile,
             selectedDeal = freshSelected,
+            selectedDetail = freshDetail,
             detailInsights = transient.detailInsights,
             isLoadingInsights = transient.isLoadingInsights,
             geminiTestResult = transient.geminiTestResult,
@@ -148,51 +182,117 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshDeals() {
         if (transientState.value.isRefreshing) return
         viewModelScope.launch {
-            transientState.update { it.copy(isRefreshing = true, errorMessage = null) }
+            transientState.update { it.copy(isRefreshing = true, errorMessage = null, isOfflineFallback = false) }
             repository.refreshDeals()
+                .onSuccess {
+                    transientState.update { it.copy(showRankDeltas = true, isOfflineFallback = false) }
+                }
                 .onFailure { err ->
                     transientState.update {
-                        it.copy(errorMessage = err.message ?: "Errore di rete durante il sync con Nintendo eShop")
+                        it.copy(
+                            isOfflineFallback = uiState.value.rawCachedDeals.isNotEmpty(),
+                            errorMessage = err.message ?: "Errore di rete durante il sync con Nintendo eShop"
+                        )
                     }
                 }
             transientState.update { it.copy(isRefreshing = false) }
         }
     }
 
-    fun openDealDetail(deal: Deal) {
+    fun clearRankDeltas() {
+        if (transientState.value.showRankDeltas) {
+            transientState.update { it.copy(showRankDeltas = false) }
+        }
+    }
+
+    fun openDealDetail(deal: Deal, rank: Int? = null, sharedCoverKey: String = "cover-${deal.id}") {
+        val model = GameDetailModel.fromDeal(deal, rank, sharedCoverKey)
         transientState.update {
             it.copy(
                 selectedDeal = deal,
+                selectedDetail = model,
                 detailInsights = null,
                 isLoadingInsights = true
             )
         }
-        loadInsights(deal, forceRefresh = false)
+        loadInsights(deal, model.id, forceRefresh = false)
+    }
+
+    fun openLibraryDetail(game: LikedGame) {
+        val norm = DealTitleNormalizer.normalize(game.title)
+        val activeDeal = uiState.value.allEligibleDeals.firstOrNull {
+            it.id == game.id || DealTitleNormalizer.normalize(it.title) == norm
+        } ?: uiState.value.rawCachedDeals.firstOrNull {
+            it.id == game.id || DealTitleNormalizer.normalize(it.title) == norm
+        }
+        val model = GameDetailModel.fromLibraryGame(game, activeDeal)
+        val lookupDeal = GameDetailModel.syntheticDealForInsights(model)
+        transientState.update {
+            it.copy(
+                selectedDeal = activeDeal,
+                selectedDetail = model,
+                detailInsights = null,
+                isLoadingInsights = lookupDeal != null
+            )
+        }
+        if (lookupDeal != null) {
+            loadInsights(lookupDeal, model.id, forceRefresh = false)
+        }
+    }
+
+    fun openDiscoveryDetail(pick: AiDiscoveryPick) {
+        val norm = DealTitleNormalizer.normalize(pick.title)
+        val activeDeal = uiState.value.allEligibleDeals.firstOrNull {
+            DealTitleNormalizer.normalize(it.title) == norm
+        } ?: uiState.value.rawCachedDeals.firstOrNull {
+            DealTitleNormalizer.normalize(it.title) == norm
+        }
+        val model = GameDetailModel.fromDiscoveryPick(pick, activeDeal)
+        val lookupDeal = GameDetailModel.syntheticDealForInsights(model)
+        transientState.update {
+            it.copy(
+                selectedDeal = activeDeal,
+                selectedDetail = model,
+                detailInsights = null,
+                isLoadingInsights = lookupDeal != null
+            )
+        }
+        if (lookupDeal != null) {
+            loadInsights(lookupDeal, model.id, forceRefresh = false)
+        }
     }
 
     fun refreshDealInsights(deal: Deal) {
         transientState.update { it.copy(isLoadingInsights = true) }
-        loadInsights(deal, forceRefresh = true)
+        loadInsights(deal, deal.id, forceRefresh = true)
+    }
+
+    fun refreshSelectedDetailInsights() {
+        val model = transientState.value.selectedDetail ?: return
+        val deal = GameDetailModel.syntheticDealForInsights(model) ?: return
+        transientState.update { it.copy(isLoadingInsights = true) }
+        loadInsights(deal, model.id, forceRefresh = true)
     }
 
     fun closeDealDetail() {
         transientState.update {
             it.copy(
                 selectedDeal = null,
+                selectedDetail = null,
                 detailInsights = null,
                 isLoadingInsights = false
             )
         }
     }
 
-    private fun loadInsights(deal: Deal, forceRefresh: Boolean) {
+    private fun loadInsights(deal: Deal, expectedDetailId: String, forceRefresh: Boolean) {
         viewModelScope.launch {
             val insights = runCatching {
                 repository.getOrFetchGameInsights(deal, forceRefresh = forceRefresh)
             }.getOrNull()
             // Apply only if the user is still viewing the same deal.
             transientState.update { state ->
-                if (state.selectedDeal?.id == deal.id) {
+                if (state.selectedDeal?.id == deal.id || state.selectedDetail?.id == expectedDetailId) {
                     state.copy(detailInsights = insights, isLoadingInsights = false)
                 } else {
                     state
@@ -204,6 +304,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setAppPlatformFilter(filter: PlatformFilter) {
         viewModelScope.launch {
             repository.preferences.updateAppPlatformFilter(filter)
+        }
+    }
+
+    fun setWidgetPlatformFilter(filter: PlatformFilter) {
+        viewModelScope.launch {
+            repository.preferences.updateWidgetPlatformFilter(filter)
+            repository.notifyWidgetChanged()
+        }
+    }
+
+    fun setFeedSortMode(sortMode: FeedSortMode) {
+        viewModelScope.launch {
+            repository.preferences.updateFeedSortMode(sortMode)
+        }
+    }
+
+    fun setExpiringSoonOnly(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.preferences.updateExpiringSoonOnly(enabled)
         }
     }
 
@@ -618,11 +737,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openDealById(dealId: String) {
         viewModelScope.launch {
-            val deal = uiState.value.allEligibleDeals.firstOrNull { it.id == dealId }
-                ?: uiState.value.deals.firstOrNull { it.id == dealId }
+            val deals = uiState.value.deals
+            val dealIdx = deals.indexOfFirst { it.id == dealId }
+            val deal = deals.getOrNull(dealIdx)
+                ?: uiState.value.allEligibleDeals.firstOrNull { it.id == dealId }
                 ?: repository.preferences.getCachedDeals().firstOrNull { it.id == dealId }
             if (deal != null) {
-                openDealDetail(deal)
+                openDealDetail(deal, rank = if (dealIdx >= 0) dealIdx + 1 else null)
             } else {
                 transientState.update {
                     it.copy(statusMessage = "Offerta non più disponibile in cache.")
