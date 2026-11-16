@@ -1,50 +1,49 @@
 package com.switchpulse.app.data.remote
 
 import com.switchpulse.app.data.model.AiDiscoveryPick
+import com.switchpulse.app.data.model.AiProvider
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.GamerSoulProfile
 import com.switchpulse.app.data.model.LikedGame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
- * Uses Gemini BYOK to extrapolate a player's deeper "Gamer Soul" (archetype, taste pillars,
- * red flags, psychological preferences) from their rated games, personal comments, backlog and
- * free-text preferences, and to discover 5-10 Switch games outside the discounts feed.
+ * Uses Gemini, OpenRouter or DeepSeek BYOK to extrapolate a player's deeper "Gamer Soul"
+ * (archetype, taste pillars, red flags, psychological preferences) from their rated games,
+ * personal comments, backlog and free-text preferences, and to discover 5-10 Switch games
+ * outside the discounts feed.
  */
 class GeminiSoulClient(
     private val httpClient: OkHttpClient = defaultHttpClient(),
-    private val endpointOverride: String? = null
+    private val endpointOverride: String? = null,
+    private val openAiEndpointOverride: String? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-
-    private fun resolveEndpoint(modelId: String): String {
-        val override = endpointOverride?.takeIf { it.isNotBlank() }
-        if (override != null) return override
-        val model = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
-        return "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
-    }
+    private val aiClient = AiCompletionClient(
+        httpClient = httpClient,
+        geminiEndpointOverride = endpointOverride,
+        openRouterEndpointOverride = openAiEndpointOverride,
+        deepSeekEndpointOverride = openAiEndpointOverride
+    )
 
     fun computeSignature(
         modelId: String,
         likedGames: List<LikedGame>,
-        userTastePrompt: String
+        userTastePrompt: String,
+        provider: AiProvider = AiProvider.GEMINI
     ): String {
         val libSig = likedGames
             .sortedBy { it.id }
             .joinToString("|") {
                 "${it.id}:${it.rating ?: 0}:${if (it.isOwned) 1 else 0}:${it.userNote.orEmpty().trim()}"
             }
-        val raw = "$modelId#$libSig#${userTastePrompt.trim()}"
+        val raw = "${provider.id}:$modelId#$libSig#${userTastePrompt.trim()}"
         val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }.take(24)
     }
@@ -53,20 +52,34 @@ class GeminiSoulClient(
         apiKey: String,
         likedGames: List<LikedGame>,
         modelId: String = GeminiModels.HYDROGEN,
-        userTastePrompt: String = ""
+        userTastePrompt: String = "",
+        provider: AiProvider = AiProvider.GEMINI
     ): Result<GamerSoulProfile> = withContext(Dispatchers.IO) {
         val cleanKey = apiKey.trim()
-        val effectiveModel = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
+        val effectiveModel = modelId.trim().ifBlank { GeminiModels.defaultModelFor(provider, forSoul = true) }
         if (cleanKey.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("Inserisci prima la tua chiave API Gemini in Filtri & IA."))
+            return@withContext Result.failure(IllegalStateException("Inserisci prima la tua API key per ${provider.displayName} in Impostazioni."))
         }
         if (likedGames.isEmpty() && userTastePrompt.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Aggiungi o vota almeno un gioco in Libreria (o scrivi le preferenze IA)."))
         }
 
         val prompt = buildSoulPrompt(likedGames, userTastePrompt.trim())
-        val rawResponse = executeGeminiJsonCall(cleanKey, effectiveModel, prompt)
-            .getOrElse { return@withContext Result.failure(it) }
+        val rawResponse = when (
+            val call = aiClient.generate(
+                provider = provider,
+                apiKey = cleanKey,
+                modelId = effectiveModel,
+                prompt = prompt,
+                temperature = 0.45,
+                maxOutputTokens = 4096,
+                expectJsonObject = true,
+                enableGeminiGoogleSearch = false
+            )
+        ) {
+            is AiCallResult.Failure -> return@withContext Result.failure(IllegalStateException(call.message))
+            is AiCallResult.Success -> call.text
+        }
 
         val objSlice = extractJsonObject(rawResponse)
             ?: return@withContext Result.failure(IllegalStateException("Risposta profilo AI non leggibile"))
@@ -89,7 +102,7 @@ class GeminiSoulClient(
                 soulSummary = summary.take(700),
                 corePillars = parsed.corePillars.mapNotNull { it.trim().takeIf(String::isNotEmpty) }.take(5),
                 redFlags = parsed.redFlags.mapNotNull { it.trim().takeIf(String::isNotEmpty) }.take(4),
-                signature = computeSignature(effectiveModel, likedGames, userTastePrompt),
+                signature = computeSignature(effectiveModel, likedGames, userTastePrompt, provider),
                 generatedAtMs = System.currentTimeMillis()
             )
         )
@@ -102,12 +115,13 @@ class GeminiSoulClient(
         modelId: String = GeminiModels.HYDROGEN,
         userTastePrompt: String = "",
         excludePreviousTitles: List<String> = emptyList(),
-        desiredCount: Int = 7
+        desiredCount: Int = 7,
+        provider: AiProvider = AiProvider.GEMINI
     ): Result<List<AiDiscoveryPick>> = withContext(Dispatchers.IO) {
         val cleanKey = apiKey.trim()
-        val effectiveModel = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
+        val effectiveModel = modelId.trim().ifBlank { GeminiModels.defaultModelFor(provider, forSoul = true) }
         if (cleanKey.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("Inserisci prima la tua chiave API Gemini in Filtri & IA."))
+            return@withContext Result.failure(IllegalStateException("Inserisci prima la tua API key per ${provider.displayName} in Impostazioni."))
         }
 
         val count = desiredCount.coerceIn(5, 10)
@@ -118,8 +132,21 @@ class GeminiSoulClient(
             excludePreviousTitles = excludePreviousTitles,
             count = count
         )
-        val rawResponse = executeGeminiJsonCall(cleanKey, effectiveModel, prompt)
-            .getOrElse { return@withContext Result.failure(it) }
+        val rawResponse = when (
+            val call = aiClient.generate(
+                provider = provider,
+                apiKey = cleanKey,
+                modelId = effectiveModel,
+                prompt = prompt,
+                temperature = 0.45,
+                maxOutputTokens = 4096,
+                expectJsonObject = false,
+                enableGeminiGoogleSearch = false
+            )
+        ) {
+            is AiCallResult.Failure -> return@withContext Result.failure(IllegalStateException(call.message))
+            is AiCallResult.Success -> call.text
+        }
 
         val arrSlice = extractJsonArray(rawResponse)
             ?: return@withContext Result.failure(IllegalStateException("Lista consigli AI non leggibile"))
@@ -154,48 +181,6 @@ class GeminiSoulClient(
             Result.failure(IllegalStateException("Nessun titolo nuovo trovato fuori dalla tua libreria"))
         } else {
             Result.success(cleaned)
-        }
-    }
-
-    private fun executeGeminiJsonCall(
-        apiKey: String,
-        modelId: String,
-        prompt: String
-    ): Result<String> = runCatching {
-        val reqObj = GeminiGenerateRequest(
-            contents = listOf(GeminiContent(parts = listOf(GeminiPart(text = prompt)))),
-            generationConfig = GeminiGenerationConfig(
-                responseMimeType = "application/json",
-                temperature = 0.45,
-                maxOutputTokens = 4096,
-                thinkingConfig = GeminiModels.thinkingConfigFor(modelId)
-            )
-        )
-        val request = Request.Builder()
-            .url(resolveEndpoint(modelId))
-            .header("x-goog-api-key", apiKey)
-            .post(json.encodeToString(reqObj).toRequestBody(JSON_MEDIA_TYPE))
-            .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            val raw = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val err = runCatching {
-                    json.decodeFromString<GeminiErrorEnvelope>(raw).error?.message
-                }.getOrNull().orEmpty().trim()
-                throw IllegalStateException("HTTP ${response.code}${if (err.isNotBlank()) ": ${err.take(160)}" else ""}")
-            }
-            val envelope = json.decodeFromString<GeminiGenerateResponse>(raw)
-            val text = envelope.candidates
-                .firstOrNull()
-                ?.content
-                ?.parts
-                .orEmpty()
-                .filter { it.thought != true && !it.text.isNullOrBlank() }
-                .joinToString("\n") { it.text.orEmpty() }
-                .trim()
-            if (text.isBlank()) throw IllegalStateException("Risposta vuota da Gemini")
-            text
         }
     }
 
@@ -299,8 +284,6 @@ class GeminiSoulClient(
     }
 
     companion object {
-        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
-
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(45, TimeUnit.SECONDS)

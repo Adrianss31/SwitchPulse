@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.switchpulse.app.BuildConfig
 import com.switchpulse.app.data.DealsRepository
+import com.switchpulse.app.data.model.AiProvider
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
@@ -126,10 +127,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 checkForUpdates(silentIfUpToDate = true)
             }
             val oneDayMs = 24 * 60 * 60 * 1000L
-            if (settings.geminiApiKey.isNotBlank() &&
-                (settings.availableGeminiModels.isEmpty() || System.currentTimeMillis() - settings.geminiModelsUpdatedAtMs > oneDayMs)
-            ) {
-                refreshAvailableGeminiModels(silent = true)
+            val needsInitialModels = settings.hasAnyAiKey() &&
+                (System.currentTimeMillis() - settings.geminiModelsUpdatedAtMs > oneDayMs ||
+                    settings.configuredProviders().any { settings.availableModelsFor(it).isEmpty() })
+            if (needsInitialModels) {
+                refreshAvailableModels(silent = true)
             }
         }
     }
@@ -362,72 +364,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setGeminiApiKey(apiKey: String) {
+    fun setProviderApiKey(provider: AiProvider, apiKey: String) {
         viewModelScope.launch {
-            repository.preferences.updateGeminiApiKey(apiKey)
+            repository.preferences.updateProviderApiKey(provider, apiKey)
             val clean = apiKey.trim()
             val msg = if (clean.isBlank()) {
-                "Chiave Gemini rimossa (attivo motore locale a micro-tag)"
+                "Chiave ${provider.displayName} rimossa"
             } else {
-                "Chiave Gemini salvata · Caricamento modelli..."
+                "Chiave ${provider.displayName} salvata · Caricamento modelli..."
             }
             transientState.update { it.copy(statusMessage = msg, geminiTestResult = null) }
             if (clean.isNotBlank()) {
-                refreshAvailableGeminiModels(silent = true)
+                refreshAvailableModels(provider = provider, silent = true)
             }
         }
     }
 
-    fun setGeminiModel(modelId: String) {
-        setGeminiRerankModel(modelId)
-    }
-
-    fun setGeminiRerankModel(modelId: String) {
+    fun setRerankTarget(provider: AiProvider, modelId: String) {
         viewModelScope.launch {
-            repository.preferences.updateGeminiRerankModel(modelId)
+            repository.preferences.updateRerankTarget(provider, modelId)
             transientState.update {
                 it.copy(
-                    statusMessage = "Modello Classifica impostato su $modelId",
+                    statusMessage = "Classifica: ${provider.shortLabel} · $modelId",
                     geminiTestResult = null
                 )
             }
         }
     }
 
-    fun setGeminiInsightsModel(modelId: String) {
+    fun setInsightsTarget(provider: AiProvider, modelId: String) {
         viewModelScope.launch {
-            repository.preferences.updateGeminiInsightsModel(modelId)
+            repository.preferences.updateInsightsTarget(provider, modelId)
             transientState.update {
                 it.copy(
-                    statusMessage = "Modello Schede gioco impostato su $modelId",
+                    statusMessage = "Schede gioco: ${provider.shortLabel} · $modelId",
                     geminiTestResult = null
                 )
             }
         }
     }
 
-    fun setGeminiSoulModel(modelId: String) {
+    fun setSoulTarget(provider: AiProvider, modelId: String) {
         viewModelScope.launch {
-            repository.preferences.updateGeminiSoulModel(modelId)
+            repository.preferences.updateSoulTarget(provider, modelId)
             transientState.update {
                 it.copy(
-                    statusMessage = "Modello Anima & Consigli impostato su $modelId",
+                    statusMessage = "Anima & Consigli: ${provider.shortLabel} · $modelId",
                     geminiTestResult = null
                 )
             }
         }
     }
 
-    fun refreshAvailableGeminiModels(silent: Boolean = false) {
+    fun refreshAvailableModels(provider: AiProvider? = null, silent: Boolean = false) {
         if (transientState.value.isLoadingModels) return
         viewModelScope.launch {
             transientState.update { it.copy(isLoadingModels = true) }
-            val result = repository.refreshAvailableGeminiModels()
+            val result = if (provider != null) {
+                repository.refreshModelsForProvider(provider).map { it.size }
+            } else {
+                repository.refreshAllAvailableModels()
+            }
             val msg = if (silent) {
                 null
             } else {
                 result.fold(
-                    onSuccess = { models -> "✨ ${models.size} modelli Gemini aggiornati da Google" },
+                    onSuccess = { count ->
+                        val scopeLabel = provider?.displayName ?: "provider AI"
+                        "✨ $count modelli caricati da $scopeLabel"
+                    },
                     onFailure = { err -> "⚠️ Aggiornamento modelli fallito: ${err.message ?: "errore di rete"}" }
                 )
             }
@@ -440,20 +445,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun testGeminiConnection(pendingKey: String? = null) {
+    fun testProviderConnection(provider: AiProvider, pendingKey: String? = null) {
         if (transientState.value.isTestingGemini) return
         viewModelScope.launch {
             transientState.update { it.copy(isTestingGemini = true, geminiTestResult = null) }
             val trimmedPending = pendingKey?.trim()
             if (!trimmedPending.isNullOrBlank()) {
-                val currentSaved = repository.preferences.getSettings().geminiApiKey.trim()
+                val currentSaved = repository.preferences.getSettings().apiKeyFor(provider)
                 if (trimmedPending != currentSaved) {
-                    repository.preferences.updateGeminiApiKey(trimmedPending)
+                    repository.preferences.updateProviderApiKey(provider, trimmedPending)
                 }
             }
-            val resultText = repository.testGeminiKey().fold(
+            val resultText = repository.testProviderKey(provider).fold(
                 onSuccess = { ok -> ok },
-                onFailure = { err -> "⚠️ ${err.message ?: "Errore connessione Gemini"}" }
+                onFailure = { err -> "⚠️ ${err.message ?: "Errore connessione ${provider.displayName}"}" }
             )
             transientState.update {
                 it.copy(

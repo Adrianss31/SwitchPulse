@@ -222,12 +222,37 @@ data class AiDiscoveryPick(
 }
 
 @Serializable
+enum class AiProvider(
+    val id: String,
+    val displayName: String,
+    val shortLabel: String,
+    val keyPlaceholder: String
+) {
+    GEMINI("gemini", "Google Gemini", "Gemini", "AIza..."),
+    OPENROUTER("openrouter", "OpenRouter", "OpenRouter", "sk-or-v1-..."),
+    DEEPSEEK("deepseek", "DeepSeek", "DeepSeek", "sk-...");
+
+    companion object {
+        fun fromId(raw: String?): AiProvider =
+            entries.firstOrNull { it.id.equals(raw?.trim(), ignoreCase = true) } ?: GEMINI
+    }
+}
+
+@Serializable
+data class AiTaskTarget(
+    val provider: AiProvider = AiProvider.GEMINI,
+    val modelId: String = "gemini-3.5-flash-lite"
+)
+
+@Serializable
 data class GeminiModelInfo(
     val id: String,
     val displayName: String,
     val description: String = "",
     val inputTokenLimit: Int = 0,
-    val outputTokenLimit: Int = 0
+    val outputTokenLimit: Int = 0,
+    val provider: AiProvider = AiProvider.GEMINI,
+    val isFree: Boolean = false
 )
 
 data class FilterSettings(
@@ -242,11 +267,15 @@ data class FilterSettings(
     val recommendationWeight: Int = 50,
     val forYouOnlyMode: Boolean = false,
     val geminiApiKey: String = "",
+    val openRouterApiKey: String = "",
+    val deepSeekApiKey: String = "",
     val geminiModel: String = "gemini-4-hydrogen",
-    val geminiRerankModel: String = "gemini-3.5-flash-lite",
-    val geminiInsightsModel: String = "gemini-3.5-flash-lite",
-    val geminiSoulModel: String = "gemini-4-hydrogen",
+    val rerankTarget: AiTaskTarget = AiTaskTarget(AiProvider.GEMINI, "gemini-3.5-flash-lite"),
+    val insightsTarget: AiTaskTarget = AiTaskTarget(AiProvider.GEMINI, "gemini-3.5-flash-lite"),
+    val soulTarget: AiTaskTarget = AiTaskTarget(AiProvider.GEMINI, "gemini-4-hydrogen"),
     val availableGeminiModels: List<GeminiModelInfo> = emptyList(),
+    val availableOpenRouterModels: List<GeminiModelInfo> = emptyList(),
+    val availableDeepSeekModels: List<GeminiModelInfo> = emptyList(),
     val geminiModelsUpdatedAtMs: Long = 0L,
     val geminiStatusSummary: String = "",
     val geminiSignature: String = "",
@@ -256,4 +285,22 @@ data class FilterSettings(
     val githubRepo: String = "",
     val autoCheckUpdates: Boolean = true,
     val lastSyncEpochMs: Long = 0L
-)
+) {
+    fun apiKeyFor(provider: AiProvider): String = when (provider) {
+        AiProvider.GEMINI -> geminiApiKey.trim()
+        AiProvider.OPENROUTER -> openRouterApiKey.trim()
+        AiProvider.DEEPSEEK -> deepSeekApiKey.trim()
+    }
+
+    fun hasKeyFor(provider: AiProvider): Boolean = apiKeyFor(provider).isNotBlank()
+
+    fun hasAnyAiKey(): Boolean = AiProvider.entries.any { hasKeyFor(it) }
+
+    fun configuredProviders(): List<AiProvider> = AiProvider.entries.filter { hasKeyFor(it) }
+
+    fun availableModelsFor(provider: AiProvider): List<GeminiModelInfo> = when (provider) {
+        AiProvider.GEMINI -> availableGeminiModels
+        AiProvider.OPENROUTER -> availableOpenRouterModels
+        AiProvider.DEEPSEEK -> availableDeepSeekModels
+    }
+}

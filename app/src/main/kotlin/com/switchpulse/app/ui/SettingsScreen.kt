@@ -70,6 +70,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.switchpulse.app.BuildConfig
+import com.switchpulse.app.data.model.AiProvider
+import com.switchpulse.app.data.model.AiTaskTarget
 import com.switchpulse.app.data.model.GeminiModelInfo
 import com.switchpulse.app.data.remote.GeminiModels
 import com.switchpulse.app.ui.theme.EshopCrimson
@@ -117,12 +119,12 @@ fun SettingsScreen(
     onInstallDownloaded: (ReleaseInfo, File) -> Unit,
     onWidgetPinFeedback: (String) -> Unit,
     onRecommendationWeightChange: (Int) -> Unit,
-    onSaveGeminiApiKey: (String) -> Unit,
-    onSelectRerankModel: (String) -> Unit,
-    onSelectInsightsModel: (String) -> Unit,
-    onSelectSoulModel: (String) -> Unit,
-    onRefreshGeminiModels: () -> Unit,
-    onTestGeminiConnection: (String) -> Unit,
+    onSaveProviderApiKey: (AiProvider, String) -> Unit,
+    onSelectRerankTarget: (AiProvider, String) -> Unit,
+    onSelectInsightsTarget: (AiProvider, String) -> Unit,
+    onSelectSoulTarget: (AiProvider, String) -> Unit,
+    onRefreshModels: (AiProvider?) -> Unit,
+    onTestProviderConnection: (AiProvider, String) -> Unit,
     onRerankWithGeminiNow: () -> Unit,
     onSaveUserTastePrompt: (String) -> Unit = {},
     onOpenLibraryTab: () -> Unit,
@@ -132,28 +134,41 @@ fun SettingsScreen(
     var repoInput by remember(state.settings.githubRepo) {
         mutableStateOf(state.settings.githubRepo)
     }
-    var geminiKeyInput by remember(state.settings.geminiApiKey) {
-        mutableStateOf(state.settings.geminiApiKey)
+    var selectedKeyProvider by remember {
+        mutableStateOf(
+            state.settings.configuredProviders().firstOrNull() ?: AiProvider.GEMINI
+        )
+    }
+    val savedKeyForSelectedProvider = state.settings.apiKeyFor(selectedKeyProvider)
+    var providerKeyInput by remember(selectedKeyProvider, savedKeyForSelectedProvider) {
+        mutableStateOf(savedKeyForSelectedProvider)
     }
     var tastePromptInput by remember(state.settings.userTastePrompt) {
         mutableStateOf(state.settings.userTastePrompt)
     }
-    var showGeminiKey by remember { mutableStateOf(false) }
+    var showApiKey by remember { mutableStateOf(false) }
     var activeTaskPicker by remember { mutableStateOf<AiTaskSlot?>(null) }
-    val resolvedModels = remember(
+
+    val modelsByProvider = remember(
         state.settings.availableGeminiModels,
-        state.settings.geminiRerankModel,
-        state.settings.geminiInsightsModel,
-        state.settings.geminiSoulModel
+        state.settings.availableOpenRouterModels,
+        state.settings.availableDeepSeekModels,
+        state.settings.rerankTarget,
+        state.settings.insightsTarget,
+        state.settings.soulTarget
     ) {
-        GeminiModels.resolveModelsList(
-            dynamicModels = state.settings.availableGeminiModels,
-            selectedIds = listOf(
-                state.settings.geminiRerankModel,
-                state.settings.geminiInsightsModel,
-                state.settings.geminiSoulModel
-            )
+        val selectedAll = listOf(
+            state.settings.rerankTarget,
+            state.settings.insightsTarget,
+            state.settings.soulTarget
         )
+        AiProvider.entries.associateWith { provider ->
+            GeminiModels.resolveModelsList(
+                dynamicModels = state.settings.availableModelsFor(provider),
+                selectedIds = selectedAll.filter { it.provider == provider }.map { it.modelId },
+                provider = provider
+            )
+        }
     }
 
     LazyColumn(
@@ -271,12 +286,12 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Modelli Gemini per task (BYOK)",
+                        text = "Modelli AI per task (BYOK)",
                         style = MaterialTheme.typography.labelLarge
                     )
                     FilledTonalButton(
-                        onClick = onRefreshGeminiModels,
-                        enabled = state.settings.geminiApiKey.isNotBlank() && !state.isLoadingModels,
+                        onClick = { onRefreshModels(null) },
+                        enabled = !state.isLoadingModels,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                         modifier = Modifier.height(32.dp)
                     ) {
@@ -300,11 +315,12 @@ fun SettingsScreen(
                     }
                 }
                 Spacer(modifier = Modifier.height(4.dp))
+                val totalDynamicCount = AiProvider.entries.sumOf { state.settings.availableModelsFor(it).size }
                 Text(
-                    text = if (state.settings.availableGeminiModels.isNotEmpty()) {
-                        "Lista live da Google (${state.settings.availableGeminiModels.size} modelli compatibili): assegna un modello leggero alle analisi brevi e uno potente a Anima & Consigli."
+                    text = if (totalDynamicCount > 0) {
+                        "$totalDynamicCount modelli live caricati (Gemini, OpenRouter, DeepSeek): scegli provider e modello ideale per ciascun task."
                     } else {
-                        "Assegna modelli diversi per task. Inserisci la chiave e tocca \"Aggiorna\" per scaricare dinamicamente nuovi modelli da Google senza aggiornare l'app."
+                        "Supporta Google Gemini, OpenRouter e DeepSeek. Scegli provider e modello per ogni task e tocca \"Aggiorna\" per caricare i cataloghi live."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -314,36 +330,86 @@ fun SettingsScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     TaskModelSelectorRow(
                         slot = AiTaskSlot.RERANK,
-                        selectedId = state.settings.geminiRerankModel,
-                        models = resolvedModels,
+                        target = state.settings.rerankTarget,
+                        hasProviderKey = state.settings.hasKeyFor(state.settings.rerankTarget.provider),
+                        models = modelsByProvider[state.settings.rerankTarget.provider].orEmpty(),
                         onClick = { activeTaskPicker = AiTaskSlot.RERANK }
                     )
                     TaskModelSelectorRow(
                         slot = AiTaskSlot.INSIGHTS,
-                        selectedId = state.settings.geminiInsightsModel,
-                        models = resolvedModels,
+                        target = state.settings.insightsTarget,
+                        hasProviderKey = state.settings.hasKeyFor(state.settings.insightsTarget.provider),
+                        models = modelsByProvider[state.settings.insightsTarget.provider].orEmpty(),
                         onClick = { activeTaskPicker = AiTaskSlot.INSIGHTS }
                     )
                     TaskModelSelectorRow(
                         slot = AiTaskSlot.SOUL,
-                        selectedId = state.settings.geminiSoulModel,
-                        models = resolvedModels,
+                        target = state.settings.soulTarget,
+                        hasProviderKey = state.settings.hasKeyFor(state.settings.soulTarget.provider),
+                        models = modelsByProvider[state.settings.soulTarget.provider].orEmpty(),
                         onClick = { activeTaskPicker = AiTaskSlot.SOUL }
                     )
                 }
 
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                Text(
+                    text = "Chiavi API Provider",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    AiProvider.entries.forEach { provider ->
+                        val isTabSelected = selectedKeyProvider == provider
+                        val isConfigured = state.settings.hasKeyFor(provider)
+                        Surface(
+                            onClick = { selectedKeyProvider = provider },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isTabSelected) {
+                                EshopCrimson
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHigh
+                            },
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (isTabSelected) EshopCrimson else MaterialTheme.colorScheme.outlineVariant
+                            ),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 9.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (isConfigured) "✓ ${provider.shortLabel}" else provider.shortLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (isTabSelected || isConfigured) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isTabSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(10.dp))
                 OutlinedTextField(
-                    value = geminiKeyInput,
-                    onValueChange = { geminiKeyInput = it },
-                    label = { Text("Gemini API Key (AIza...)") },
+                    value = providerKeyInput,
+                    onValueChange = { providerKeyInput = it },
+                    label = { Text("${selectedKeyProvider.displayName} API Key (${selectedKeyProvider.keyPlaceholder})") },
                     singleLine = true,
-                    visualTransformation = if (showGeminiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
-                        IconButton(onClick = { showGeminiKey = !showGeminiKey }) {
+                        IconButton(onClick = { showApiKey = !showApiKey }) {
                             Icon(
-                                imageVector = if (showGeminiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                                contentDescription = if (showGeminiKey) "Nascondi" else "Mostra"
+                                imageVector = if (showApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                contentDescription = if (showApiKey) "Nascondi" else "Mostra"
                             )
                         }
                     },
@@ -356,14 +422,14 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilledTonalButton(
-                        onClick = { onSaveGeminiApiKey(geminiKeyInput) },
+                        onClick = { onSaveProviderApiKey(selectedKeyProvider, providerKeyInput) },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("Salva chiave")
                     }
                     FilledTonalButton(
-                        onClick = { onTestGeminiConnection(geminiKeyInput) },
-                        enabled = (geminiKeyInput.isNotBlank() || state.settings.geminiApiKey.isNotBlank()) && !state.isTestingGemini,
+                        onClick = { onTestProviderConnection(selectedKeyProvider, providerKeyInput) },
+                        enabled = (providerKeyInput.isNotBlank() || state.settings.hasKeyFor(selectedKeyProvider)) && !state.isTestingGemini,
                         modifier = Modifier.weight(1f)
                     ) {
                         if (state.isTestingGemini) {
@@ -374,28 +440,34 @@ fun SettingsScreen(
                     }
                 }
 
-                if (state.settings.geminiApiKey.isNotBlank()) {
+                if (state.settings.hasKeyFor(selectedKeyProvider) || state.settings.hasKeyFor(state.settings.rerankTarget.provider)) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Button(
-                            onClick = onRerankWithGeminiNow,
-                            enabled = !state.isRefreshing,
-                            colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Ricalcola AI ora")
-                        }
-                        TextButton(
-                            onClick = {
-                                geminiKeyInput = ""
-                                onSaveGeminiApiKey("")
+                        if (state.settings.hasKeyFor(state.settings.rerankTarget.provider)) {
+                            Button(
+                                onClick = onRerankWithGeminiNow,
+                                enabled = !state.isRefreshing,
+                                colors = ButtonDefaults.buttonColors(containerColor = EshopCrimson),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Ricalcola AI ora")
                             }
-                        ) {
-                            Text("Rimuovi", color = EshopCrimson)
+                        } else {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                        if (state.settings.hasKeyFor(selectedKeyProvider)) {
+                            TextButton(
+                                onClick = {
+                                    providerKeyInput = ""
+                                    onSaveProviderApiKey(selectedKeyProvider, "")
+                                }
+                            ) {
+                                Text("Rimuovi ${selectedKeyProvider.shortLabel}", color = EshopCrimson)
+                            }
                         }
                     }
                 }
@@ -704,23 +776,22 @@ fun SettingsScreen(
     val currentPickerSlot = activeTaskPicker
     if (currentPickerSlot != null) {
         val currentSelection = when (currentPickerSlot) {
-            AiTaskSlot.RERANK -> state.settings.geminiRerankModel
-            AiTaskSlot.INSIGHTS -> state.settings.geminiInsightsModel
-            AiTaskSlot.SOUL -> state.settings.geminiSoulModel
+            AiTaskSlot.RERANK -> state.settings.rerankTarget
+            AiTaskSlot.INSIGHTS -> state.settings.insightsTarget
+            AiTaskSlot.SOUL -> state.settings.soulTarget
         }
         ModelPickerBottomSheet(
             slot = currentPickerSlot,
-            models = resolvedModels,
-            selectedModelId = currentSelection,
-            hasLiveModels = state.settings.availableGeminiModels.isNotEmpty(),
+            settings = state.settings,
+            modelsByProvider = modelsByProvider,
+            currentTarget = currentSelection,
             isRefreshingModels = state.isLoadingModels,
-            canRefreshModels = state.settings.geminiApiKey.isNotBlank(),
-            onRefreshModels = onRefreshGeminiModels,
-            onSelectModel = { modelId ->
+            onRefreshModels = { provider -> onRefreshModels(provider) },
+            onSelectModel = { provider, modelId ->
                 when (currentPickerSlot) {
-                    AiTaskSlot.RERANK -> onSelectRerankModel(modelId)
-                    AiTaskSlot.INSIGHTS -> onSelectInsightsModel(modelId)
-                    AiTaskSlot.SOUL -> onSelectSoulModel(modelId)
+                    AiTaskSlot.RERANK -> onSelectRerankTarget(provider, modelId)
+                    AiTaskSlot.INSIGHTS -> onSelectInsightsTarget(provider, modelId)
+                    AiTaskSlot.SOUL -> onSelectSoulTarget(provider, modelId)
                 }
                 activeTaskPicker = null
             },
@@ -732,11 +803,12 @@ fun SettingsScreen(
 @Composable
 private fun TaskModelSelectorRow(
     slot: AiTaskSlot,
-    selectedId: String,
+    target: AiTaskTarget,
+    hasProviderKey: Boolean,
     models: List<GeminiModelInfo>,
     onClick: () -> Unit
 ) {
-    val display = models.firstOrNull { it.id == selectedId }?.displayName ?: selectedId
+    val display = models.firstOrNull { it.id == target.modelId }?.displayName ?: target.modelId
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(14.dp),
@@ -763,14 +835,38 @@ private fun TaskModelSelectorRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = if (display != selectedId) "$display · $selectedId" else selectedId,
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                    color = EshopCrimson,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Spacer(modifier = Modifier.height(5.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = EshopCrimson.copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = target.provider.shortLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = EshopCrimson,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    Text(
+                        text = display,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (!hasProviderKey) {
+                        Text(
+                            text = "· chiave mancante",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             }
             Icon(
                 imageVector = Icons.Rounded.KeyboardArrowDown,
@@ -785,24 +881,32 @@ private fun TaskModelSelectorRow(
 @Composable
 private fun ModelPickerBottomSheet(
     slot: AiTaskSlot,
-    models: List<GeminiModelInfo>,
-    selectedModelId: String,
-    hasLiveModels: Boolean,
+    settings: com.switchpulse.app.data.model.FilterSettings,
+    modelsByProvider: Map<AiProvider, List<GeminiModelInfo>>,
+    currentTarget: AiTaskTarget,
     isRefreshingModels: Boolean,
-    canRefreshModels: Boolean,
-    onRefreshModels: () -> Unit,
-    onSelectModel: (String) -> Unit,
+    onRefreshModels: (AiProvider) -> Unit,
+    onSelectModel: (AiProvider, String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var activeProvider by remember(currentTarget.provider) { mutableStateOf(currentTarget.provider) }
     var filterText by remember { mutableStateOf("") }
-    val filteredModels = remember(models, filterText) {
+    var freeOnly by remember { mutableStateOf(false) }
+
+    val providerModels = modelsByProvider[activeProvider].orEmpty()
+    val isLive = settings.availableModelsFor(activeProvider).isNotEmpty()
+    val hasProviderKey = settings.hasKeyFor(activeProvider)
+
+    val filteredModels = remember(providerModels, filterText, freeOnly, activeProvider) {
         val q = filterText.trim().lowercase()
-        if (q.isEmpty()) models
-        else models.filter {
-            it.id.lowercase().contains(q) ||
-                it.displayName.lowercase().contains(q) ||
-                it.description.lowercase().contains(q)
+        providerModels.filter { model ->
+            val matchesFree = !freeOnly || activeProvider != AiProvider.OPENROUTER || model.isFree
+            val matchesQuery = q.isEmpty() ||
+                model.id.lowercase().contains(q) ||
+                model.displayName.lowercase().contains(q) ||
+                model.description.lowercase().contains(q)
+            matchesFree && matchesQuery
         }
     }
 
@@ -830,31 +934,108 @@ private fun ModelPickerBottomSheet(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = if (hasLiveModels) {
-                            "${models.size} modelli caricati da Google"
+                        text = if (isLive) {
+                            "${providerModels.size} modelli live da ${activeProvider.displayName}"
                         } else {
-                            "Elenco base (aggiorna con la tua API key per nuovi modelli)"
+                            "Elenco base ${activeProvider.displayName} (tocca ↻ per aggiornare)"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (canRefreshModels) {
-                    IconButton(onClick = onRefreshModels, enabled = !isRefreshingModels) {
-                        if (isRefreshingModels) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Rounded.Refresh, contentDescription = "Aggiorna da Google")
+                IconButton(
+                    onClick = { onRefreshModels(activeProvider) },
+                    enabled = !isRefreshingModels && (activeProvider == AiProvider.OPENROUTER || hasProviderKey)
+                ) {
+                    if (isRefreshingModels) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Rounded.Refresh, contentDescription = "Aggiorna catalogo")
+                    }
+                }
+            }
+
+            // Provider tabs
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                AiProvider.entries.forEach { provider ->
+                    val selectedTab = provider == activeProvider
+                    val hasKey = settings.hasKeyFor(provider)
+                    Surface(
+                        onClick = {
+                            activeProvider = provider
+                            freeOnly = false
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (selectedTab) EshopCrimson else MaterialTheme.colorScheme.surfaceContainerHigh,
+                        border = BorderStroke(
+                            1.dp,
+                            if (selectedTab) EshopCrimson else MaterialTheme.colorScheme.outlineVariant
+                        ),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (hasKey) "✓ ${provider.shortLabel}" else provider.shortLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (selectedTab) Color.White else MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
             }
 
-            if (models.size > 5) {
+            if (!hasProviderKey) {
+                Text(
+                    text = "Chiave ${activeProvider.displayName} non ancora configurata: ricordati di inserirla nella sezione Chiavi API qui sotto.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            if (activeProvider == AiProvider.OPENROUTER) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        onClick = { freeOnly = !freeOnly },
+                        shape = RoundedCornerShape(999.dp),
+                        color = if (freeOnly) {
+                            EshopCrimson.copy(alpha = 0.16f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (freeOnly) EshopCrimson else MaterialTheme.colorScheme.outlineVariant
+                        )
+                    ) {
+                        Text(
+                            text = if (freeOnly) "✓ Solo modelli Gratis (\$0)" else "Filtra solo Gratis (\$0)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (freeOnly) EshopCrimson else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+
+            if (providerModels.size > 4) {
                 OutlinedTextField(
                     value = filterText,
                     onValueChange = { filterText = it },
-                    placeholder = { Text("Filtra modello (es. flash, lite, hydrogen, 2.5...)") },
+                    placeholder = { Text("Filtra modello (es. free, llama, deepseek, flash...)") },
                     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -864,14 +1045,14 @@ private fun ModelPickerBottomSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 420.dp),
+                    .heightIn(max = 390.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(filteredModels, key = { it.id }) { model ->
-                    val isSelected = model.id == selectedModelId
-                    val isRecommended = model.id == slot.recommendedId
+                items(filteredModels, key = { "${it.provider.id}:${it.id}" }) { model ->
+                    val isSelected = model.provider == currentTarget.provider && model.id == currentTarget.modelId
+                    val isRecommended = model.provider == AiProvider.GEMINI && model.id == slot.recommendedId
                     Surface(
-                        onClick = { onSelectModel(model.id) },
+                        onClick = { onSelectModel(model.provider, model.id) },
                         shape = RoundedCornerShape(14.dp),
                         color = if (isSelected) {
                             EshopCrimson.copy(alpha = 0.14f)
@@ -901,17 +1082,33 @@ private fun ModelPickerBottomSheet(
                                     color = if (isSelected) EshopCrimson else MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.weight(1f).padding(end = 8.dp)
                                 )
-                                if (isRecommended) {
-                                    Surface(
-                                        shape = RoundedCornerShape(999.dp),
-                                        color = MaterialTheme.colorScheme.primaryContainer
-                                    ) {
-                                        Text(
-                                            text = "Consigliato",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                        )
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    if (model.isFree) {
+                                        Surface(
+                                            shape = RoundedCornerShape(999.dp),
+                                            color = MaterialTheme.colorScheme.tertiaryContainer
+                                        ) {
+                                            Text(
+                                                text = "GRATIS",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                    if (isRecommended) {
+                                        Surface(
+                                            shape = RoundedCornerShape(999.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer
+                                        ) {
+                                            Text(
+                                                text = "Consigliato",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }

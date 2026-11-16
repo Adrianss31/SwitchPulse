@@ -267,7 +267,7 @@ fun GameDetailSheet(
                     OutlinedTextField(
                         value = noteDraft,
                         onValueChange = { if (it.length <= 240) noteDraft = it },
-                        label = { Text("Commento sul voto per Gemini (opzionale)") },
+                        label = { Text("Commento sul voto per l'IA (opzionale)") },
                         placeholder = { Text("Es. mi piace lo stile tattico, odio il backtracking...") },
                         maxLines = 3,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -367,7 +367,7 @@ fun GameDetailSheet(
                                         modifier = Modifier.size(13.dp)
                                     )
                                     Text(
-                                        text = "${settings.geminiRerankModel} · ${scoreVal ?: "--"}/100",
+                                        text = "${settings.rerankTarget.provider.shortLabel} · ${settings.rerankTarget.modelId} · ${scoreVal ?: "--"}/100",
                                         color = badgeFg,
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                                     )
@@ -383,10 +383,10 @@ fun GameDetailSheet(
                         }
                     } else {
                         Text(
-                            text = if (settings.geminiApiKey.isBlank()) {
-                                "Valutazione locale attiva (inserisci una API key in Impostazioni per il rerank Gemini)."
+                            text = if (!settings.hasKeyFor(settings.rerankTarget.provider)) {
+                                "Valutazione locale attiva (inserisci una API key in Impostazioni per il rerank AI)."
                             } else {
-                                "Nessun giudizio Gemini specifico su questo titolo (punteggio calcolato dal motore locale a micro-tag)."
+                                "Nessun giudizio AI specifico su questo titolo (punteggio calcolato dal motore locale a micro-tag)."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

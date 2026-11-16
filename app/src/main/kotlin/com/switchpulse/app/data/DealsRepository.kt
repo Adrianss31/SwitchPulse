@@ -5,6 +5,7 @@ import androidx.glance.appwidget.updateAll
 import com.switchpulse.app.data.local.CoverBitmapCache
 import com.switchpulse.app.data.local.PreferencesStore
 import com.switchpulse.app.data.model.AiDiscoveryPick
+import com.switchpulse.app.data.model.AiProvider
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
@@ -12,6 +13,7 @@ import com.switchpulse.app.data.model.GamerSoulProfile
 import com.switchpulse.app.data.model.GeminiModelInfo
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.remote.GameInsightsClient
+import com.switchpulse.app.data.remote.GeminiModels
 import com.switchpulse.app.data.remote.GeminiModelsClient
 import com.switchpulse.app.data.remote.GeminiReranker
 import com.switchpulse.app.data.remote.GeminiSoulClient
@@ -103,15 +105,19 @@ class DealsRepository(
         force: Boolean
     ): List<Deal> {
         val ratedGames = settings.likedGames.filter { it.isPositiveRating || it.isNegativeRating }
-        val useAi = settings.geminiApiKey.isNotBlank() &&
+        val rerankTask = settings.rerankTarget
+        val rerankKey = settings.apiKeyFor(rerankTask.provider)
+        val useAi = rerankKey.isNotBlank() &&
             ratedGames.isNotEmpty() &&
             (settings.recommendationWeight > 0 || settings.forYouOnlyMode)
 
         if (!useAi) {
             val msg = when {
-                settings.geminiApiKey.isBlank() -> ""
+                !settings.hasAnyAiKey() -> ""
+                rerankKey.isBlank() ->
+                    "Chiave mancante per ${rerankTask.provider.displayName} (task Classifica) · aggiungila in Impostazioni"
                 ratedGames.isEmpty() ->
-                    "Chiave salvata (${settings.geminiRerankModel}) · assegna almeno un voto 1–2★ o 4–5★ nella Libreria"
+                    "Chiave salvata (${rerankTask.provider.shortLabel} · ${rerankTask.modelId}) · assegna almeno un voto 1–2★ o 4–5★ nella Libreria"
                 else -> "Peso raccomandazioni a 0% · AI in pausa"
             }
             if (msg.isNotBlank() || settings.geminiStatusSummary.isNotBlank()) {
@@ -127,27 +133,29 @@ class DealsRepository(
             .ifEmpty { deals.sortedByDescending { it.hotScore }.take(GeminiReranker.MAX_CANDIDATES) }
 
         val signature = geminiReranker.computeSignature(
-            modelId = settings.geminiRerankModel,
+            modelId = rerankTask.modelId,
             likedGames = settings.likedGames,
             candidates = aiTargets,
-            userTastePrompt = settings.userTastePrompt
+            userTastePrompt = settings.userTastePrompt,
+            provider = rerankTask.provider
         )
         val hasCachedAi = aiTargets.any { it.aiAffinityScore != null }
         if (!force && signature == settings.geminiSignature && hasCachedAi) {
             val aiCount = deals.count { it.aiAffinityScore != null }
             preferences.saveGeminiRunState(
-                statusSummary = "✨ Cache AI attiva (${settings.geminiRerankModel}) · $aiCount offerte già valutate",
+                statusSummary = "✨ Cache AI attiva (${rerankTask.provider.shortLabel} · ${rerankTask.modelId}) · $aiCount offerte già valutate",
                 signature = signature
             )
             return deals
         }
 
         val outcome = geminiReranker.rerank(
-            apiKey = settings.geminiApiKey,
+            apiKey = rerankKey,
             likedGames = settings.likedGames,
             candidates = aiTargets,
-            modelId = settings.geminiRerankModel,
-            userTastePrompt = settings.userTastePrompt
+            modelId = rerankTask.modelId,
+            userTastePrompt = settings.userTastePrompt,
+            provider = rerankTask.provider
         )
         preferences.saveGeminiRunState(
             statusSummary = outcome.statusSummary,
@@ -174,28 +182,66 @@ class DealsRepository(
 
     suspend fun testGeminiKey(): Result<String> {
         val settings = preferences.getSettings()
+        return testProviderKey(settings.rerankTarget.provider)
+    }
+
+    suspend fun testProviderKey(provider: AiProvider): Result<String> {
+        val settings = preferences.getSettings()
+        val key = settings.apiKeyFor(provider)
+        val candidateModel = listOf(settings.rerankTarget, settings.insightsTarget, settings.soulTarget)
+            .firstOrNull { it.provider == provider }
+            ?.modelId
+            ?.takeIf { it.isNotBlank() }
+            ?: GeminiModels.defaultModelFor(provider)
         val testRes = geminiReranker.testKey(
-            apiKey = settings.geminiApiKey,
-            modelId = settings.geminiRerankModel
+            apiKey = key,
+            modelId = candidateModel,
+            provider = provider
         )
         if (testRes.isSuccess) {
-            refreshAvailableGeminiModels()
+            refreshModelsForProvider(provider)
         }
         return testRes
     }
 
-    suspend fun refreshAvailableGeminiModels(): Result<List<GeminiModelInfo>> {
+    suspend fun refreshModelsForProvider(provider: AiProvider): Result<List<GeminiModelInfo>> {
         val settings = preferences.getSettings()
-        val result = modelsClient.fetchAvailableModels(settings.geminiApiKey)
+        val result = modelsClient.fetchModelsForProvider(provider, settings.apiKeyFor(provider))
         result.onSuccess { models ->
-            preferences.saveAvailableGeminiModels(models)
+            preferences.saveAvailableModelsForProvider(provider, models)
         }
         return result
+    }
+
+    suspend fun refreshAllAvailableModels(): Result<Int> {
+        val settings = preferences.getSettings()
+        val providersToFetch = (settings.configuredProviders() + AiProvider.OPENROUTER).distinct()
+        var total = 0
+        var anySuccess = false
+        var lastError: Throwable? = null
+        for (provider in providersToFetch) {
+            val res = modelsClient.fetchModelsForProvider(provider, settings.apiKeyFor(provider))
+            res.onSuccess { list ->
+                preferences.saveAvailableModelsForProvider(provider, list)
+                total += list.size
+                anySuccess = true
+            }.onFailure { err ->
+                if (settings.hasKeyFor(provider)) {
+                    lastError = err
+                }
+            }
+        }
+        return if (anySuccess) {
+            Result.success(total)
+        } else {
+            Result.failure(lastError ?: IllegalStateException("Nessun modello caricato"))
+        }
     }
 
     suspend fun getOrFetchGameInsights(deal: Deal, forceRefresh: Boolean = false): GameExternalInsights {
         val sevenDaysMs = 7 * 24 * 60 * 60 * 1000L
         val settings = preferences.getSettings()
+        val insightsTask = settings.insightsTarget
         val currentProfileSig = GameInsightsClient.computeProfileSignature(
             likedGames = settings.likedGames,
             userTastePrompt = settings.userTastePrompt
@@ -211,10 +257,11 @@ class DealsRepository(
         }
         val fetched = insightsClient.fetchInsights(
             deal = deal,
-            geminiApiKey = settings.geminiApiKey,
-            geminiModel = settings.geminiInsightsModel,
+            geminiApiKey = settings.apiKeyFor(insightsTask.provider),
+            geminiModel = insightsTask.modelId,
             likedGames = settings.likedGames,
-            userTastePrompt = settings.userTastePrompt
+            userTastePrompt = settings.userTastePrompt,
+            provider = insightsTask.provider
         )
         val hasUsefulData = fetched.metacriticScore != null ||
             !fetched.hltbMainHours.isNullOrBlank() ||
@@ -232,11 +279,13 @@ class DealsRepository(
 
     suspend fun generateGamerSoul(): Result<GamerSoulProfile> {
         val settings = preferences.getSettings()
+        val soulTask = settings.soulTarget
         val result = soulClient.generateGamerSoul(
-            apiKey = settings.geminiApiKey,
+            apiKey = settings.apiKeyFor(soulTask.provider),
             likedGames = settings.likedGames,
-            modelId = settings.geminiSoulModel,
-            userTastePrompt = settings.userTastePrompt
+            modelId = soulTask.modelId,
+            userTastePrompt = settings.userTastePrompt,
+            provider = soulTask.provider
         )
         result.onSuccess { profile ->
             preferences.saveGamerSoulProfile(profile)
@@ -246,10 +295,12 @@ class DealsRepository(
 
     suspend fun discoverGamesForSoul(freshBatch: Boolean = false): Result<List<AiDiscoveryPick>> {
         val settings = preferences.getSettings()
+        val soulTask = settings.soulTarget
         val expectedSig = soulClient.computeSignature(
-            modelId = settings.geminiSoulModel,
+            modelId = soulTask.modelId,
             likedGames = settings.likedGames,
-            userTastePrompt = settings.userTastePrompt
+            userTastePrompt = settings.userTastePrompt,
+            provider = soulTask.provider
         )
         val soulProfile = if (settings.gamerSoulProfile != null &&
             settings.gamerSoulProfile.signature == expectedSig
@@ -262,12 +313,13 @@ class DealsRepository(
 
         val previousTitles = if (freshBatch) settings.discoveryPicks.map { it.title } else emptyList()
         val picksResult = soulClient.discoverGamesForSoul(
-            apiKey = settings.geminiApiKey,
+            apiKey = settings.apiKeyFor(soulTask.provider),
             soulProfile = soulProfile,
             likedGames = settings.likedGames,
-            modelId = settings.geminiSoulModel,
+            modelId = soulTask.modelId,
             userTastePrompt = settings.userTastePrompt,
-            excludePreviousTitles = previousTitles
+            excludePreviousTitles = previousTitles,
+            provider = soulTask.provider
         )
         val rawPicks = picksResult.getOrElse { return Result.failure(it) }
         val enriched = runCatching { eshopClient.enrichDiscoveryPicks(rawPicks) }.getOrDefault(rawPicks)

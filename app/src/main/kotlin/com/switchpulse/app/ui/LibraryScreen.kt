@@ -154,7 +154,7 @@ fun LibraryScreen(
                 ownedCount = ownedCount,
                 backlogCount = backlogCount,
                 ratedCount = ratedCount,
-                geminiEnabled = state.settings.geminiApiKey.isNotBlank(),
+                geminiEnabled = state.settings.hasAnyAiKey(),
                 activeFilter = activeFilter,
                 onSelectStatFilter = { targetFilter ->
                     activeFilter = if (activeFilter == targetFilter) LibraryFilter.ALL else targetFilter
@@ -169,7 +169,7 @@ fun LibraryScreen(
             GamerSoulBentoCard(
                 soulProfile = state.settings.gamerSoulProfile,
                 discoveryCount = state.settings.discoveryPicks.size,
-                hasApiKey = state.settings.geminiApiKey.isNotBlank(),
+                hasApiKey = state.settings.hasKeyFor(state.settings.soulTarget.provider),
                 hasLibrarySignals = library.isNotEmpty() || state.settings.userTastePrompt.isNotBlank(),
                 isGeneratingSoul = state.isGeneratingSoul,
                 isDiscoveringGames = state.isDiscoveringGames,
@@ -326,7 +326,7 @@ private fun GamerSoulBentoCard(
 
                 if (!hasApiKey) {
                     Text(
-                        text = "Configura una chiave Gemini in Impostazioni per sbloccare il profilo e i consigli personalizzati.",
+                        text = "Configura una chiave API (Gemini, OpenRouter o DeepSeek) in Impostazioni per sbloccare il profilo e i consigli personalizzati.",
                         style = MaterialTheme.typography.labelSmall,
                         color = EshopCrimson
                     )

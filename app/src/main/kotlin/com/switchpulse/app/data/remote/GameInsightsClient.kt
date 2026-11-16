@@ -1,5 +1,6 @@
 package com.switchpulse.app.data.remote
 
+import com.switchpulse.app.data.model.AiProvider
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.GameExternalInsights
@@ -38,29 +39,38 @@ class GameInsightsClient(
     private val steamAppDetailsUrl: String = "https://store.steampowered.com/api/appdetails",
     private val geminiEndpointOverride: String? = null,
     private val steamStoreSearchUrl: String? = null,
-    private val metacriticBaseUrl: String? = null
+    private val metacriticBaseUrl: String? = null,
+    private val openAiEndpointOverride: String? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val aiClient = AiCompletionClient(
+        httpClient = httpClient,
+        geminiEndpointOverride = geminiEndpointOverride,
+        openRouterEndpointOverride = openAiEndpointOverride,
+        deepSeekEndpointOverride = openAiEndpointOverride
+    )
     // Avoid wasting Free-Tier RPM on repeated google_search 400/403/429 failures for the same key.
     private val groundingBlockedUntilMs = ConcurrentHashMap<String, Long>()
 
     suspend fun fetchInsights(
         deal: Deal,
         geminiApiKey: String,
-        geminiModel: String = GeminiModels.HYDROGEN,
+        geminiModel: String = GeminiModels.FLASH_LITE,
         likedGames: List<LikedGame> = emptyList(),
-        userTastePrompt: String = ""
+        userTastePrompt: String = "",
+        provider: AiProvider = AiProvider.GEMINI
     ): GameExternalInsights = withContext(Dispatchers.IO) {
         val resolvedAppId = deal.steamAppId ?: resolveSteamAppIdOnDemand(deal)
         val steamMeta = resolvedAppId?.let { fetchSteamMetacritic(it) }
         val directMeta = if (steamMeta == null) fetchDirectMetacritic(deal.title) else null
         val cleanKey = geminiApiKey.trim()
-        val effectiveModel = geminiModel.trim().ifBlank { GeminiModels.HYDROGEN }
+        val effectiveModel = geminiModel.trim().ifBlank { GeminiModels.defaultModelFor(provider) }
         val profileSig = computeProfileSignature(likedGames, userTastePrompt)
 
         val aiResult = if (cleanKey.isNotBlank()) {
-            fetchWithGeminiAndFallback(
+            fetchWithProviderAndFallback(
                 deal = deal,
+                provider = provider,
                 apiKey = cleanKey,
                 modelId = effectiveModel,
                 likedGames = likedGames,
@@ -85,15 +95,21 @@ class GameInsightsClient(
             else -> null
         }
 
+        val aiBadge = if (provider == AiProvider.GEMINI) {
+            "✨ $effectiveModel"
+        } else {
+            "✨ ${provider.shortLabel} · $effectiveModel"
+        }
+
         val sourceLabel = when {
             payload != null && metaOrigin != null && aiResult.mode == AiMode.GROUNDED_SEARCH ->
-                "$metaOrigin + ✨ $effectiveModel (Google Search)"
+                "$metaOrigin + $aiBadge (Google Search)"
             payload != null && metaOrigin != null ->
-                "$metaOrigin + ✨ $effectiveModel (Analisi AI & HLTB)"
+                "$metaOrigin + $aiBadge (Analisi AI & HLTB)"
             payload != null && aiResult.mode == AiMode.GROUNDED_SEARCH ->
-                "✨ $effectiveModel (Google Search)"
+                "$aiBadge (Google Search)"
             payload != null ->
-                "✨ $effectiveModel (Stima critica & Analisi AI)"
+                "$aiBadge (Stima critica & Analisi AI)"
             metaOrigin != null && aiResult.errorMessage != null ->
                 "$metaOrigin · ${aiResult.errorMessage}"
             steamMeta != null ->
@@ -105,7 +121,7 @@ class GameInsightsClient(
             cleanKey.isNotBlank() ->
                 "Lookup AI non disponibile · usa i link rapidi"
             else ->
-                "Aggiungi una chiave Gemini per analisi personalizzata e stime HLTB"
+                "Aggiungi una chiave AI in Impostazioni per analisi personalizzata e stime HLTB"
         }
 
         GameExternalInsights(
@@ -217,8 +233,9 @@ class GameInsightsClient(
         return digest.joinToString("") { "%02x".format(it) }.take(16)
     }
 
-    private fun fetchWithGeminiAndFallback(
+    private suspend fun fetchWithProviderAndFallback(
         deal: Deal,
+        provider: AiProvider,
         apiKey: String,
         modelId: String,
         likedGames: List<LikedGame>,
@@ -226,11 +243,12 @@ class GameInsightsClient(
     ): GeminiInsightsResult {
         val keyFp = keyFingerprint(apiKey)
         val blockedUntil = groundingBlockedUntilMs[keyFp] ?: 0L
-        val skipGrounding = System.currentTimeMillis() < blockedUntil
+        val tryGeminiGrounding = provider == AiProvider.GEMINI && System.currentTimeMillis() >= blockedUntil
 
-        val groundedAttempt = if (!skipGrounding) {
-            executeGeminiInsightsCall(
+        val groundedAttempt = if (tryGeminiGrounding) {
+            executeProviderInsightsCall(
                 deal = deal,
+                provider = provider,
                 apiKey = apiKey,
                 modelId = modelId,
                 likedGames = likedGames,
@@ -245,9 +263,9 @@ class GameInsightsClient(
             null
         }
 
-        // Fallback for Free Tier keys / unavailable Search Grounding on Gemini 3+/4.
-        val directAttempt = executeGeminiInsightsCall(
+        val directAttempt = executeProviderInsightsCall(
             deal = deal,
+            provider = provider,
             apiKey = apiKey,
             modelId = modelId,
             likedGames = likedGames,
@@ -256,7 +274,7 @@ class GameInsightsClient(
         )
         if (directAttempt.payload != null) {
             val code = groundedAttempt?.httpCode
-            if (code == 400 || code == 403 || code == 429) {
+            if (provider == AiProvider.GEMINI && (code == 400 || code == 403 || code == 429)) {
                 groundingBlockedUntilMs[keyFp] = System.currentTimeMillis() + 24 * 60 * 60 * 1000L
             }
             return directAttempt.copy(mode = AiMode.DIRECT_KNOWLEDGE)
@@ -270,99 +288,53 @@ class GameInsightsClient(
         )
     }
 
-    private fun executeGeminiInsightsCall(
+    private suspend fun executeProviderInsightsCall(
         deal: Deal,
+        provider: AiProvider,
         apiKey: String,
         modelId: String,
         likedGames: List<LikedGame>,
         userTastePrompt: String,
         useGoogleSearch: Boolean
-    ): GeminiInsightsResult = runCatching {
-        val endpoint = geminiEndpointOverride?.takeIf { it.isNotBlank() }
-            ?: "https://generativelanguage.googleapis.com/v1beta/models/$modelId:generateContent"
-
+    ): GeminiInsightsResult {
         val prompt = buildDeepPrompt(
             deal = deal,
             likedGames = likedGames,
             userTastePrompt = userTastePrompt,
             groundedSearch = useGoogleSearch
         )
-
-        val thinking = GeminiModels.thinkingConfigFor(modelId)
-
-        val reqObj = if (useGoogleSearch) {
-            GeminiGenerateRequest(
-                contents = listOf(GeminiContent(parts = listOf(GeminiPart(text = prompt)))),
-                tools = listOf(GeminiTool(emptyMap())),
-                generationConfig = GeminiGenerationConfig(
-                    temperature = 0.15,
-                    maxOutputTokens = 4096,
-                    thinkingConfig = thinking
-                )
+        return when (
+            val call = aiClient.generate(
+                provider = provider,
+                apiKey = apiKey,
+                modelId = modelId,
+                prompt = prompt,
+                temperature = if (useGoogleSearch) 0.15 else 0.25,
+                maxOutputTokens = 4096,
+                expectJsonObject = true,
+                enableGeminiGoogleSearch = useGoogleSearch
             )
-        } else {
-            GeminiGenerateRequest(
-                contents = listOf(GeminiContent(parts = listOf(GeminiPart(text = prompt)))),
-                generationConfig = GeminiGenerationConfig(
-                    responseMimeType = "application/json",
-                    temperature = 0.25,
-                    maxOutputTokens = 4096,
-                    thinkingConfig = thinking
-                )
+        ) {
+            is AiCallResult.Failure -> GeminiInsightsResult(
+                payload = null,
+                mode = AiMode.NONE,
+                errorMessage = call.message,
+                httpCode = call.httpCode
             )
-        }
-
-        val request = Request.Builder()
-            .url(endpoint)
-            .header("x-goog-api-key", apiKey)
-            .post(json.encodeToString(reqObj).toRequestBody(JSON_MEDIA_TYPE))
-            .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            val raw = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val err = runCatching {
-                    json.decodeFromString<GeminiErrorEnvelope>(raw).error?.message
-                }.getOrNull().orEmpty().trim()
-                val shortErr = "HTTP ${response.code}${if (err.isNotBlank()) ": ${err.take(120)}" else ""}"
-                return@use GeminiInsightsResult(
-                    payload = null,
-                    mode = AiMode.NONE,
-                    errorMessage = shortErr,
-                    httpCode = response.code
-                )
-            }
-
-            val envelope = json.decodeFromString<GeminiGenerateResponse>(raw)
-            val candidate = envelope.candidates.firstOrNull()
-            val allText = candidate
-                ?.content
-                ?.parts
-                .orEmpty()
-                .filter { it.thought != true && !it.text.isNullOrBlank() }
-                .mapNotNull { it.text }
-                .joinToString("\n")
-                .trim()
-
-            val payload = parseGroundedPayload(allText)
-            if (payload == null) {
-                val finish = candidate?.finishReason?.takeIf { it.isNotBlank() } ?: "empty"
-                val snippet = allText.replace("\n", " ").take(80)
-                GeminiInsightsResult(
-                    payload = null,
-                    mode = AiMode.NONE,
-                    errorMessage = "Risposta AI non interpretabile ($finish)${if (snippet.isNotBlank()) ": $snippet" else ""}"
-                )
-            } else {
-                GeminiInsightsResult(payload = payload, mode = AiMode.DIRECT_KNOWLEDGE, errorMessage = null)
+            is AiCallResult.Success -> {
+                val payload = parseGroundedPayload(call.text)
+                if (payload == null) {
+                    val snippet = call.text.replace("\n", " ").take(80)
+                    GeminiInsightsResult(
+                        payload = null,
+                        mode = AiMode.NONE,
+                        errorMessage = "Risposta AI non interpretabile${if (snippet.isNotBlank()) ": $snippet" else ""}"
+                    )
+                } else {
+                    GeminiInsightsResult(payload = payload, mode = AiMode.DIRECT_KNOWLEDGE, errorMessage = null)
+                }
             }
         }
-    }.getOrElse { err ->
-        GeminiInsightsResult(
-            payload = null,
-            mode = AiMode.NONE,
-            errorMessage = err.localizedMessage?.take(100) ?: "Errore di rete AI"
-        )
     }
 
     private fun buildDeepPrompt(

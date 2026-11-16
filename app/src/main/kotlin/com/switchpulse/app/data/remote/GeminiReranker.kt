@@ -1,17 +1,15 @@
 package com.switchpulse.app.data.remote
 
+import com.switchpulse.app.data.model.AiProvider
+import com.switchpulse.app.data.model.AiTaskTarget
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.GeminiModelInfo
 import com.switchpulse.app.data.model.LikedGame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -23,6 +21,13 @@ object GeminiModels {
     const val ARGON = "gemini-4-argon"
     const val FLASH_LITE = "gemini-3.5-flash-lite"
 
+    const val OPENROUTER_FREE = "openrouter/free"
+    const val OPENROUTER_DEEPSEEK_CHAT = "deepseek/deepseek-chat"
+    const val OPENROUTER_GPT4O_MINI = "openai/gpt-4o-mini"
+
+    const val DEEPSEEK_CHAT = "deepseek-chat"
+    const val DEEPSEEK_REASONER = "deepseek-reasoner"
+
     val OPTIONS: List<Pair<String, String>> = listOf(
         HYDROGEN to "Gemini 4 Hydrogen (potente)",
         ARGON to "Gemini 4 Argon (ragionamento)",
@@ -33,36 +38,94 @@ object GeminiModels {
         GeminiModelInfo(
             id = FLASH_LITE,
             displayName = "Gemini 3.5 Flash-Lite",
-            description = "Leggero e rapido, ideale per analisi brevi e free tier"
+            description = "Leggero e rapido, ideale per analisi brevi e free tier",
+            provider = AiProvider.GEMINI
         ),
         GeminiModelInfo(
             id = HYDROGEN,
             displayName = "Gemini 4 Hydrogen",
-            description = "Bilanciato ad alta qualità per profili e consigli profondi"
+            description = "Bilanciato ad alta qualità per profili e consigli profondi",
+            provider = AiProvider.GEMINI
         ),
         GeminiModelInfo(
             id = ARGON,
             displayName = "Gemini 4 Argon",
-            description = "Ragionamento esteso"
+            description = "Ragionamento esteso",
+            provider = AiProvider.GEMINI
         )
     )
 
+    val OPENROUTER_DEFAULTS: List<GeminiModelInfo> = listOf(
+        GeminiModelInfo(
+            id = OPENROUTER_FREE,
+            displayName = "OpenRouter Free Router",
+            description = "Seleziona automaticamente un modello gratuito disponibile su OpenRouter",
+            provider = AiProvider.OPENROUTER,
+            isFree = true
+        ),
+        GeminiModelInfo(
+            id = OPENROUTER_DEEPSEEK_CHAT,
+            displayName = "DeepSeek V3 (via OpenRouter)",
+            description = "Ottimo rapporto qualità/prezzo su OpenRouter",
+            provider = AiProvider.OPENROUTER,
+            isFree = false
+        ),
+        GeminiModelInfo(
+            id = OPENROUTER_GPT4O_MINI,
+            displayName = "GPT-4o mini (via OpenRouter)",
+            description = "Veloce e compatto su OpenRouter",
+            provider = AiProvider.OPENROUTER,
+            isFree = false
+        )
+    )
+
+    val DEEPSEEK_DEFAULTS: List<GeminiModelInfo> = listOf(
+        GeminiModelInfo(
+            id = DEEPSEEK_CHAT,
+            displayName = "DeepSeek Chat (V3)",
+            description = "Veloce ed economico, ideale per rerank e schede gioco",
+            provider = AiProvider.DEEPSEEK
+        ),
+        GeminiModelInfo(
+            id = DEEPSEEK_REASONER,
+            displayName = "DeepSeek Reasoner (R1)",
+            description = "Ragionamento profondo, ideale per Anima e Consigli",
+            provider = AiProvider.DEEPSEEK
+        )
+    )
+
+    fun defaultModelFor(provider: AiProvider, forSoul: Boolean = false): String = when (provider) {
+        AiProvider.GEMINI -> if (forSoul) HYDROGEN else FLASH_LITE
+        AiProvider.OPENROUTER -> OPENROUTER_FREE
+        AiProvider.DEEPSEEK -> if (forSoul) DEEPSEEK_REASONER else DEEPSEEK_CHAT
+    }
+
+    fun defaultModelsFor(provider: AiProvider): List<GeminiModelInfo> = when (provider) {
+        AiProvider.GEMINI -> DEFAULT_INFOS
+        AiProvider.OPENROUTER -> OPENROUTER_DEFAULTS
+        AiProvider.DEEPSEEK -> DEEPSEEK_DEFAULTS
+    }
+
+    fun defaultTargetFor(provider: AiProvider, forSoul: Boolean = false): AiTaskTarget =
+        AiTaskTarget(provider = provider, modelId = defaultModelFor(provider, forSoul = forSoul))
+
     fun resolveModelsList(
         dynamicModels: List<GeminiModelInfo>,
-        selectedIds: List<String> = emptyList()
+        selectedIds: List<String> = emptyList(),
+        provider: AiProvider = AiProvider.GEMINI
     ): List<GeminiModelInfo> {
         val byId = LinkedHashMap<String, GeminiModelInfo>()
         dynamicModels.forEach { info ->
             val id = info.id.trim()
-            if (id.isNotBlank()) byId[id] = info.copy(id = id)
+            if (id.isNotBlank()) byId[id] = info.copy(id = id, provider = provider)
         }
-        DEFAULT_INFOS.forEach { info ->
+        defaultModelsFor(provider).forEach { info ->
             byId.putIfAbsent(info.id, info)
         }
         selectedIds.forEach { rawId ->
             val id = rawId.trim()
             if (id.isNotBlank() && !byId.containsKey(id)) {
-                byId[id] = GeminiModelInfo(id = id, displayName = id)
+                byId[id] = GeminiModelInfo(id = id, displayName = id, provider = provider)
             }
         }
         return byId.values.toList()
@@ -73,8 +136,6 @@ object GeminiModels {
     fun thinkingConfigFor(modelId: String): GeminiThinkingConfig? {
         val match = MAJOR_VERSION_REGEX.find(modelId.trim()) ?: return null
         val major = match.groupValues.getOrNull(1)?.toIntOrNull() ?: return null
-        // thinkingLevel ("low"/"high") applies cleanly to Gemini 3+ (including 4, 5, etc.);
-        // older 2.x models use different thinking fields or none at all.
         return if (major >= 3) {
             GeminiThinkingConfig(thinkingLevel = "low")
         } else {
@@ -96,28 +157,29 @@ data class GeminiRerankOutcome(
 )
 
 /**
- * Optional "Bring Your Own Key" Gemini semantic reranker defaulting to `gemini-4-hydrogen`.
+ * Semantic reranker supporting Google Gemini, OpenRouter and DeepSeek (BYOK).
  * Evaluates both positive (4-5★) and negative (1-2★) tastes in a single compact batch,
  * and surfaces explicit diagnostic feedback so the user can see when & how AI acted.
  */
 class GeminiReranker(
     private val httpClient: OkHttpClient = defaultHttpClient(),
-    private val endpointBaseUrl: String? = null
+    private val endpointBaseUrl: String? = null,
+    private val openAiEndpointOverride: String? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-
-    private fun resolveEndpoint(modelId: String): String {
-        val override = endpointBaseUrl?.takeIf { it.isNotBlank() }
-        if (override != null) return override
-        val model = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
-        return "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
-    }
+    private val aiClient = AiCompletionClient(
+        httpClient = httpClient,
+        geminiEndpointOverride = endpointBaseUrl,
+        openRouterEndpointOverride = openAiEndpointOverride,
+        deepSeekEndpointOverride = openAiEndpointOverride
+    )
 
     fun computeSignature(
         modelId: String,
         likedGames: List<LikedGame>,
         candidates: List<Deal>,
-        userTastePrompt: String = ""
+        userTastePrompt: String = "",
+        provider: AiProvider = AiProvider.GEMINI
     ): String {
         val librarySig = likedGames
             .filter { it.rating != null || !it.userNote.isNullOrBlank() || it.isOwned }
@@ -129,7 +191,7 @@ class GeminiReranker(
             .take(MAX_CANDIDATES)
             .joinToString(",") { it.id }
         val promptSig = userTastePrompt.trim()
-        val raw = "$modelId#$librarySig#$promptSig#$candSig"
+        val raw = "${provider.id}:$modelId#$librarySig#$promptSig#$candSig"
         val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }.take(24)
     }
@@ -138,25 +200,26 @@ class GeminiReranker(
         apiKey: String,
         likedGames: List<LikedGame>,
         candidates: List<Deal>,
-        modelId: String = GeminiModels.HYDROGEN,
-        userTastePrompt: String = ""
+        modelId: String = GeminiModels.FLASH_LITE,
+        userTastePrompt: String = "",
+        provider: AiProvider = AiProvider.GEMINI
     ): GeminiRerankOutcome = withContext(Dispatchers.IO) {
         val cleanKey = apiKey.trim()
-        val effectiveModel = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
+        val effectiveModel = modelId.trim().ifBlank { GeminiModels.defaultModelFor(provider) }
         val rated = likedGames.filter { it.isPositiveRating || it.isNegativeRating }
         val cleanTastePrompt = userTastePrompt.trim()
 
         if (cleanKey.isBlank()) {
             return@withContext GeminiRerankOutcome(
                 scores = emptyMap(),
-                statusSummary = "Nessuna API key configurata · attivo solo motore locale",
+                statusSummary = "Nessuna API key configurata per ${provider.displayName} · attivo solo motore locale",
                 isError = false
             )
         }
         if (rated.isEmpty() && cleanTastePrompt.isBlank()) {
             return@withContext GeminiRerankOutcome(
                 scores = emptyMap(),
-                statusSummary = "Chiave salvata ($effectiveModel) · vota un gioco o scrivi le tue preferenze per attivare il rerank AI",
+                statusSummary = "Chiave salvata (${provider.shortLabel} · $effectiveModel) · vota un gioco o scrivi le tue preferenze",
                 isError = false
             )
         }
@@ -169,60 +232,36 @@ class GeminiReranker(
         }
 
         val topCandidates = candidates.take(MAX_CANDIDATES)
-
         val prompt = buildPrompt(
             likedGames = likedGames,
             candidates = topCandidates,
             userTastePrompt = cleanTastePrompt
         )
-        val requestBodyObj = GeminiGenerateRequest(
-            contents = listOf(
-                GeminiContent(parts = listOf(GeminiPart(text = prompt)))
-            ),
-            generationConfig = GeminiGenerationConfig(
-                responseMimeType = "application/json",
-                temperature = 0.25,
-                maxOutputTokens = 8192,
-                thinkingConfig = GeminiModels.thinkingConfigFor(effectiveModel)
-            )
-        )
-
-        val payloadJson = json.encodeToString(requestBodyObj)
-        val request = Request.Builder()
-            .url(resolveEndpoint(effectiveModel))
-            .header("x-goog-api-key", cleanKey)
-            .post(payloadJson.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
-
         val timeStr = SimpleDateFormat("HH:mm", Locale.ITALY).format(Date())
 
-        runCatching {
-            httpClient.newCall(request).execute().use { response ->
-                val rawBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    val apiErr = extractErrorMessage(rawBody)
-                    return@use GeminiRerankOutcome(
-                        scores = emptyMap(),
-                        statusSummary = "⚠️ Errore $effectiveModel HTTP ${response.code}: ${apiErr.ifBlank { "richiesta rifiutata" }} ($timeStr)",
-                        isError = true
-                    )
-                }
-
-                val envelope = json.decodeFromString<GeminiGenerateResponse>(rawBody)
-                val modelText = envelope.candidates
-                    .firstOrNull()
-                    ?.content
-                    ?.parts
-                    .orEmpty()
-                    .filter { it.thought != true && !it.text.isNullOrBlank() }
-                    .joinToString("\n") { it.text.orEmpty() }
-                    .trim()
-
-                val parsed = parseModelScores(modelText)
+        when (
+            val result = aiClient.generate(
+                provider = provider,
+                apiKey = cleanKey,
+                modelId = effectiveModel,
+                prompt = prompt,
+                temperature = 0.25,
+                maxOutputTokens = 8192,
+                expectJsonObject = false,
+                enableGeminiGoogleSearch = false
+            )
+        ) {
+            is AiCallResult.Failure -> GeminiRerankOutcome(
+                scores = emptyMap(),
+                statusSummary = "⚠️ Errore ${provider.shortLabel} ($effectiveModel) ${result.message} ($timeStr)",
+                isError = true
+            )
+            is AiCallResult.Success -> {
+                val parsed = parseModelScores(result.text)
                 if (parsed.isEmpty()) {
                     GeminiRerankOutcome(
                         scores = emptyMap(),
-                        statusSummary = "⚠️ $effectiveModel ha risposto alle $timeStr ma nessun punteggio JSON era leggibile (fallback locale)",
+                        statusSummary = "⚠️ ${provider.shortLabel} ($effectiveModel) ha risposto alle $timeStr ma nessun punteggio JSON era leggibile",
                         isError = true
                     )
                 } else {
@@ -230,62 +269,23 @@ class GeminiReranker(
                     val negCount = parsed.values.count { it.score <= 38.0 }
                     GeminiRerankOutcome(
                         scores = parsed,
-                        statusSummary = "✨ $effectiveModel attivo ($timeStr) · ${topCandidates.size} offerte analizzate: $posCount consigliate, $negCount sconsigliate",
+                        statusSummary = "✨ ${provider.shortLabel} ($effectiveModel) attivo ($timeStr) · ${topCandidates.size} offerte analizzate: $posCount consigliate, $negCount sconsigliate",
                         isError = false
                     )
                 }
             }
-        }.getOrElse { err ->
-            GeminiRerankOutcome(
-                scores = emptyMap(),
-                statusSummary = "⚠️ Timeout/errore rete $effectiveModel: ${err.message ?: "sconosciuto"} ($timeStr)",
-                isError = true
-            )
         }
     }
 
     suspend fun testKey(
         apiKey: String,
-        modelId: String = GeminiModels.HYDROGEN
-    ): Result<String> = withContext(Dispatchers.IO) {
-        val cleanKey = apiKey.trim()
-        val effectiveModel = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
-        if (cleanKey.isBlank()) {
-            return@withContext Result.failure(IllegalArgumentException("Inserisci prima una API key Gemini."))
-        }
-
-        val requestBodyObj = GeminiGenerateRequest(
-            contents = listOf(
-                GeminiContent(parts = listOf(GeminiPart(text = "Rispondi esattamente con: OK")))
-            ),
-            generationConfig = GeminiGenerationConfig(
-                temperature = 0.0,
-                maxOutputTokens = 16,
-                thinkingConfig = GeminiModels.thinkingConfigFor(effectiveModel)
-            )
-        )
-        val payloadJson = json.encodeToString(requestBodyObj)
-        val request = Request.Builder()
-            .url(resolveEndpoint(effectiveModel))
-            .header("x-goog-api-key", cleanKey)
-            .post(payloadJson.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
-
-        val startMs = System.currentTimeMillis()
-        runCatching {
-            httpClient.newCall(request).execute().use { response ->
-                val rawBody = response.body?.string().orEmpty()
-                val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
-                if (!response.isSuccessful) {
-                    val msg = extractErrorMessage(rawBody).ifBlank { "HTTP ${response.code}" }
-                    error("HTTP ${response.code}: $msg")
-                }
-                val envelope = json.decodeFromString<GeminiGenerateResponse>(rawBody)
-                val text = envelope.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text.orEmpty().trim()
-                "✨ Connessione riuscita a $effectiveModel (${elapsed} ms${if (text.isNotBlank()) " · \"${text.take(24)}\"" else ""})"
-            }
-        }
-    }
+        modelId: String = GeminiModels.FLASH_LITE,
+        provider: AiProvider = AiProvider.GEMINI
+    ): Result<String> = aiClient.testConnection(
+        provider = provider,
+        apiKey = apiKey,
+        modelId = modelId
+    )
 
     internal fun parseModelScores(rawJsonText: String): Map<String, SemanticRerankEntry> {
         val cleaned = rawJsonText
@@ -402,7 +402,6 @@ class GeminiReranker(
 
     companion object {
         const val MAX_CANDIDATES = 40
-        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)

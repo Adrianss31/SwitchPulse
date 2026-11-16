@@ -1,5 +1,6 @@
 package com.switchpulse.app.data.remote
 
+import com.switchpulse.app.data.model.AiProvider
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
@@ -120,5 +121,83 @@ class GeminiModelsClientTest {
         assertTrue(merged.any { it.id == "gemini-5-custom" })
         assertTrue(merged.any { it.id == GeminiModels.FLASH_LITE })
         assertTrue(merged.any { it.id == GeminiModels.HYDROGEN })
+    }
+
+    @Test
+    fun `fetchModelsForProvider parses OpenRouter free models first and filters image models`() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "data": [
+                    {
+                      "id": "openai/gpt-4o-mini",
+                      "name": "GPT-4o mini",
+                      "pricing": { "prompt": "0.00000015", "completion": "0.0000006" },
+                      "architecture": { "output_modalities": ["text"] }
+                    },
+                    {
+                      "id": "meta-llama/llama-3.3-70b-instruct:free",
+                      "name": "Llama 3.3 70B Free",
+                      "pricing": { "prompt": "0", "completion": "0" },
+                      "architecture": { "output_modalities": ["text"] }
+                    },
+                    {
+                      "id": "black-forest-labs/flux-pro",
+                      "name": "FLUX Pro",
+                      "pricing": { "prompt": "0.05", "completion": "0.05" },
+                      "architecture": { "output_modalities": ["image"] }
+                    },
+                    {
+                      "id": "openrouter/free",
+                      "name": "Free Models Router",
+                      "pricing": { "prompt": "0", "completion": "0" },
+                      "architecture": { "output_modalities": ["text"] }
+                    }
+                  ]
+                }
+                """.trimIndent()
+            )
+        )
+
+        val client = GeminiModelsClient(
+            httpClient = OkHttpClient(),
+            openRouterEndpointOverride = server.url("/api/v1/models").toString()
+        )
+        val res = client.fetchModelsForProvider(AiProvider.OPENROUTER, "")
+        assertTrue(res.isSuccess)
+        val list = res.getOrThrow()
+        assertFalse(list.any { it.id.contains("flux") })
+        assertEquals("openrouter/free", list.first().id)
+        assertTrue(list[0].isFree)
+        assertTrue(list[1].isFree)
+        assertFalse(list.last().isFree)
+    }
+
+    @Test
+    fun `fetchModelsForProvider fetches DeepSeek models with Bearer auth`() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """
+                {
+                  "data": [
+                    { "id": "deepseek-reasoner" },
+                    { "id": "deepseek-chat" }
+                  ]
+                }
+                """.trimIndent()
+            )
+        )
+
+        val client = GeminiModelsClient(
+            httpClient = OkHttpClient(),
+            deepSeekEndpointOverride = server.url("/models").toString()
+        )
+        val res = client.fetchModelsForProvider(AiProvider.DEEPSEEK, "sk-ds-test")
+        val req = server.takeRequest()
+        assertEquals("Bearer sk-ds-test", req.getHeader("Authorization"))
+        assertTrue(res.isSuccess)
+        val list = res.getOrThrow()
+        assertEquals(listOf("deepseek-chat", "deepseek-reasoner"), list.map { it.id })
     }
 }

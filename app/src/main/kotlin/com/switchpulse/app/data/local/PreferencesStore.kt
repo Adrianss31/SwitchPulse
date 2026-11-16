@@ -13,6 +13,8 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.switchpulse.app.BuildConfig
 import com.switchpulse.app.data.model.AiDiscoveryPick
+import com.switchpulse.app.data.model.AiProvider
+import com.switchpulse.app.data.model.AiTaskTarget
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
@@ -51,9 +53,13 @@ class PreferencesStore(private val context: Context) {
         val discoveryPicks = prefs[KEY_AI_DISCOVERY_JSON]?.takeIf { it.isNotBlank() }?.let { raw ->
             runCatching { json.decodeFromString<List<AiDiscoveryPick>>(raw) }.getOrDefault(emptyList())
         }.orEmpty()
-        val availableModels = prefs[KEY_AVAILABLE_GEMINI_MODELS_JSON]?.takeIf { it.isNotBlank() }?.let { raw ->
-            runCatching { json.decodeFromString<List<GeminiModelInfo>>(raw) }.getOrDefault(emptyList())
-        }.orEmpty()
+        val availableModels = readModelsList(prefs[KEY_AVAILABLE_GEMINI_MODELS_JSON])
+        val openRouterModels = readModelsList(prefs[KEY_AVAILABLE_OPENROUTER_MODELS_JSON])
+        val deepSeekModels = readModelsList(prefs[KEY_AVAILABLE_DEEPSEEK_MODELS_JSON])
+
+        val rerankProv = AiProvider.fromId(prefs[KEY_RERANK_PROVIDER])
+        val insightsProv = AiProvider.fromId(prefs[KEY_INSIGHTS_PROVIDER])
+        val soulProv = AiProvider.fromId(prefs[KEY_SOUL_PROVIDER])
 
         FilterSettings(
             minDiscountPercent = prefs[KEY_MIN_DISCOUNT] ?: 30,
@@ -67,11 +73,27 @@ class PreferencesStore(private val context: Context) {
             recommendationWeight = prefs[KEY_RECOMMENDATION_WEIGHT] ?: 50,
             forYouOnlyMode = prefs[KEY_FOR_YOU_MODE] ?: false,
             geminiApiKey = prefs[KEY_GEMINI_API_KEY] ?: "",
+            openRouterApiKey = prefs[KEY_OPENROUTER_API_KEY] ?: "",
+            deepSeekApiKey = prefs[KEY_DEEPSEEK_API_KEY] ?: "",
             geminiModel = prefs[KEY_GEMINI_MODEL]?.takeIf { it.isNotBlank() } ?: GeminiModels.HYDROGEN,
-            geminiRerankModel = prefs[KEY_GEMINI_MODEL_RERANK]?.takeIf { it.isNotBlank() } ?: GeminiModels.FLASH_LITE,
-            geminiInsightsModel = prefs[KEY_GEMINI_MODEL_INSIGHTS]?.takeIf { it.isNotBlank() } ?: GeminiModels.FLASH_LITE,
-            geminiSoulModel = prefs[KEY_GEMINI_MODEL_SOUL]?.takeIf { it.isNotBlank() } ?: GeminiModels.HYDROGEN,
+            rerankTarget = AiTaskTarget(
+                provider = rerankProv,
+                modelId = prefs[KEY_GEMINI_MODEL_RERANK]?.takeIf { it.isNotBlank() }
+                    ?: GeminiModels.defaultModelFor(rerankProv)
+            ),
+            insightsTarget = AiTaskTarget(
+                provider = insightsProv,
+                modelId = prefs[KEY_GEMINI_MODEL_INSIGHTS]?.takeIf { it.isNotBlank() }
+                    ?: GeminiModels.defaultModelFor(insightsProv)
+            ),
+            soulTarget = AiTaskTarget(
+                provider = soulProv,
+                modelId = prefs[KEY_GEMINI_MODEL_SOUL]?.takeIf { it.isNotBlank() }
+                    ?: GeminiModels.defaultModelFor(soulProv, forSoul = true)
+            ),
             availableGeminiModels = availableModels,
+            availableOpenRouterModels = openRouterModels,
+            availableDeepSeekModels = deepSeekModels,
             geminiModelsUpdatedAtMs = prefs[KEY_GEMINI_MODELS_UPDATED_MS] ?: 0L,
             geminiStatusSummary = prefs[KEY_GEMINI_STATUS_SUMMARY] ?: "",
             geminiSignature = prefs[KEY_GEMINI_SIGNATURE] ?: "",
@@ -265,55 +287,121 @@ class PreferencesStore(private val context: Context) {
     }
 
     suspend fun updateGeminiApiKey(apiKey: String) {
-        context.dataStore.edit {
-            val clean = apiKey.trim()
-            it[KEY_GEMINI_API_KEY] = clean
-            it[KEY_GEMINI_SIGNATURE] = ""
-            if (clean.isBlank()) {
-                it[KEY_GEMINI_STATUS_SUMMARY] = ""
-                it.remove(KEY_AVAILABLE_GEMINI_MODELS_JSON)
-                it.remove(KEY_GEMINI_MODELS_UPDATED_MS)
+        updateProviderApiKey(AiProvider.GEMINI, apiKey)
+    }
+
+    suspend fun updateProviderApiKey(provider: AiProvider, apiKey: String) {
+        val clean = apiKey.trim()
+        context.dataStore.edit { prefs ->
+            when (provider) {
+                AiProvider.GEMINI -> {
+                    prefs[KEY_GEMINI_API_KEY] = clean
+                    if (clean.isBlank()) {
+                        prefs.remove(KEY_AVAILABLE_GEMINI_MODELS_JSON)
+                    }
+                }
+                AiProvider.OPENROUTER -> {
+                    prefs[KEY_OPENROUTER_API_KEY] = clean
+                    if (clean.isBlank()) {
+                        prefs.remove(KEY_AVAILABLE_OPENROUTER_MODELS_JSON)
+                    }
+                }
+                AiProvider.DEEPSEEK -> {
+                    prefs[KEY_DEEPSEEK_API_KEY] = clean
+                    if (clean.isBlank()) {
+                        prefs.remove(KEY_AVAILABLE_DEEPSEEK_MODELS_JSON)
+                    }
+                }
+            }
+            prefs[KEY_GEMINI_SIGNATURE] = ""
+
+            if (clean.isNotBlank()) {
+                // If no other provider key is configured yet, auto-route tasks to the newly added provider.
+                val hadOtherKeys = AiProvider.entries
+                    .filter { it != provider }
+                    .any { other ->
+                        val k = when (other) {
+                            AiProvider.GEMINI -> prefs[KEY_GEMINI_API_KEY]
+                            AiProvider.OPENROUTER -> prefs[KEY_OPENROUTER_API_KEY]
+                            AiProvider.DEEPSEEK -> prefs[KEY_DEEPSEEK_API_KEY]
+                        }
+                        !k.isNullOrBlank()
+                    }
+                if (!hadOtherKeys) {
+                    prefs[KEY_RERANK_PROVIDER] = provider.id
+                    prefs[KEY_GEMINI_MODEL_RERANK] = GeminiModels.defaultModelFor(provider, forSoul = false)
+                    prefs[KEY_INSIGHTS_PROVIDER] = provider.id
+                    prefs[KEY_GEMINI_MODEL_INSIGHTS] = GeminiModels.defaultModelFor(provider, forSoul = false)
+                    prefs[KEY_SOUL_PROVIDER] = provider.id
+                    prefs[KEY_GEMINI_MODEL_SOUL] = GeminiModels.defaultModelFor(provider, forSoul = true)
+                }
+            } else {
+                val anyRemaining = listOf(
+                    prefs[KEY_GEMINI_API_KEY],
+                    prefs[KEY_OPENROUTER_API_KEY],
+                    prefs[KEY_DEEPSEEK_API_KEY]
+                ).any { !it.isNullOrBlank() }
+                if (!anyRemaining) {
+                    prefs[KEY_GEMINI_STATUS_SUMMARY] = ""
+                    prefs.remove(KEY_GEMINI_MODELS_UPDATED_MS)
+                }
             }
         }
     }
 
     suspend fun updateGeminiModel(modelId: String) {
-        updateGeminiRerankModel(modelId)
+        updateRerankTarget(AiProvider.GEMINI, modelId)
     }
 
-    suspend fun updateGeminiRerankModel(modelId: String) {
-        val clean = modelId.trim().ifBlank { GeminiModels.FLASH_LITE }
+    suspend fun updateRerankTarget(provider: AiProvider, modelId: String) {
+        val clean = modelId.trim().ifBlank { GeminiModels.defaultModelFor(provider) }
         context.dataStore.edit {
+            it[KEY_RERANK_PROVIDER] = provider.id
             it[KEY_GEMINI_MODEL_RERANK] = clean
             it[KEY_GEMINI_MODEL] = clean
             it[KEY_GEMINI_SIGNATURE] = ""
         }
     }
 
-    suspend fun updateGeminiInsightsModel(modelId: String) {
-        val clean = modelId.trim().ifBlank { GeminiModels.FLASH_LITE }
+    suspend fun updateInsightsTarget(provider: AiProvider, modelId: String) {
+        val clean = modelId.trim().ifBlank { GeminiModels.defaultModelFor(provider) }
         context.dataStore.edit {
+            it[KEY_INSIGHTS_PROVIDER] = provider.id
             it[KEY_GEMINI_MODEL_INSIGHTS] = clean
         }
     }
 
-    suspend fun updateGeminiSoulModel(modelId: String) {
-        val clean = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
+    suspend fun updateSoulTarget(provider: AiProvider, modelId: String) {
+        val clean = modelId.trim().ifBlank { GeminiModels.defaultModelFor(provider, forSoul = true) }
         context.dataStore.edit {
+            it[KEY_SOUL_PROVIDER] = provider.id
             it[KEY_GEMINI_MODEL_SOUL] = clean
         }
     }
 
-    suspend fun saveAvailableGeminiModels(models: List<GeminiModelInfo>, updatedAtMs: Long = System.currentTimeMillis()) {
+    suspend fun saveAvailableModelsForProvider(
+        provider: AiProvider,
+        models: List<GeminiModelInfo>,
+        updatedAtMs: Long = System.currentTimeMillis()
+    ) {
+        val targetKey = when (provider) {
+            AiProvider.GEMINI -> KEY_AVAILABLE_GEMINI_MODELS_JSON
+            AiProvider.OPENROUTER -> KEY_AVAILABLE_OPENROUTER_MODELS_JSON
+            AiProvider.DEEPSEEK -> KEY_AVAILABLE_DEEPSEEK_MODELS_JSON
+        }
         context.dataStore.edit {
             if (models.isEmpty()) {
-                it.remove(KEY_AVAILABLE_GEMINI_MODELS_JSON)
-                it.remove(KEY_GEMINI_MODELS_UPDATED_MS)
+                it.remove(targetKey)
             } else {
-                it[KEY_AVAILABLE_GEMINI_MODELS_JSON] = json.encodeToString(models)
+                it[targetKey] = json.encodeToString(models)
                 it[KEY_GEMINI_MODELS_UPDATED_MS] = updatedAtMs
             }
         }
+    }
+
+    private fun readModelsList(raw: String?): List<GeminiModelInfo> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { json.decodeFromString<List<GeminiModelInfo>>(raw) }.getOrDefault(emptyList())
     }
 
     suspend fun saveGeminiRunState(statusSummary: String, signature: String) {
@@ -412,11 +500,18 @@ class PreferencesStore(private val context: Context) {
         private val KEY_RECOMMENDATION_WEIGHT = intPreferencesKey("recommendation_weight")
         private val KEY_FOR_YOU_MODE = booleanPreferencesKey("for_you_mode")
         private val KEY_GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
+        private val KEY_OPENROUTER_API_KEY = stringPreferencesKey("openrouter_api_key")
+        private val KEY_DEEPSEEK_API_KEY = stringPreferencesKey("deepseek_api_key")
         private val KEY_GEMINI_MODEL = stringPreferencesKey("gemini_model")
+        private val KEY_RERANK_PROVIDER = stringPreferencesKey("rerank_provider")
+        private val KEY_INSIGHTS_PROVIDER = stringPreferencesKey("insights_provider")
+        private val KEY_SOUL_PROVIDER = stringPreferencesKey("soul_provider")
         private val KEY_GEMINI_MODEL_RERANK = stringPreferencesKey("gemini_model_rerank")
         private val KEY_GEMINI_MODEL_INSIGHTS = stringPreferencesKey("gemini_model_insights")
         private val KEY_GEMINI_MODEL_SOUL = stringPreferencesKey("gemini_model_soul")
         private val KEY_AVAILABLE_GEMINI_MODELS_JSON = stringPreferencesKey("available_gemini_models_json")
+        private val KEY_AVAILABLE_OPENROUTER_MODELS_JSON = stringPreferencesKey("available_openrouter_models_json")
+        private val KEY_AVAILABLE_DEEPSEEK_MODELS_JSON = stringPreferencesKey("available_deepseek_models_json")
         private val KEY_GEMINI_MODELS_UPDATED_MS = longPreferencesKey("gemini_models_updated_ms")
         private val KEY_GEMINI_STATUS_SUMMARY = stringPreferencesKey("gemini_status_summary")
         private val KEY_GEMINI_SIGNATURE = stringPreferencesKey("gemini_signature")
