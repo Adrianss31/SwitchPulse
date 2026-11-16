@@ -232,48 +232,87 @@ class GeminiReranker(
         }
 
         val topCandidates = candidates.take(MAX_CANDIDATES)
-        val prompt = buildPrompt(
-            likedGames = likedGames,
-            candidates = topCandidates,
-            userTastePrompt = cleanTastePrompt
-        )
         val timeStr = SimpleDateFormat("HH:mm", Locale.ITALY).format(Date())
+        val combinedScores = LinkedHashMap<String, SemanticRerankEntry>()
+        var lastError: String? = null
 
-        when (
-            val result = aiClient.generate(
-                provider = provider,
-                apiKey = cleanKey,
-                modelId = effectiveModel,
-                prompt = prompt,
-                temperature = 0.25,
-                maxOutputTokens = 8192,
-                expectJsonObject = false,
-                enableGeminiGoogleSearch = false
+        val batches = topCandidates.chunked(BATCH_SIZE)
+        for (batch in batches) {
+            val prompt = buildPrompt(
+                likedGames = likedGames,
+                candidates = batch,
+                userTastePrompt = cleanTastePrompt
             )
-        ) {
-            is AiCallResult.Failure -> GeminiRerankOutcome(
-                scores = emptyMap(),
-                statusSummary = "⚠️ Errore ${provider.shortLabel} ($effectiveModel) ${result.message} ($timeStr)",
-                isError = true
-            )
-            is AiCallResult.Success -> {
-                val parsed = parseModelScores(result.text)
-                if (parsed.isEmpty()) {
-                    GeminiRerankOutcome(
-                        scores = emptyMap(),
-                        statusSummary = "⚠️ ${provider.shortLabel} ($effectiveModel) ha risposto alle $timeStr ma nessun punteggio JSON era leggibile",
-                        isError = true
-                    )
-                } else {
-                    val posCount = parsed.values.count { it.score >= 60.0 }
-                    val negCount = parsed.values.count { it.score <= 38.0 }
-                    GeminiRerankOutcome(
-                        scores = parsed,
-                        statusSummary = "✨ ${provider.shortLabel} ($effectiveModel) attivo ($timeStr) · ${topCandidates.size} offerte analizzate: $posCount consigliate, $negCount sconsigliate",
-                        isError = false
-                    )
+            when (
+                val result = aiClient.generate(
+                    provider = provider,
+                    apiKey = cleanKey,
+                    modelId = effectiveModel,
+                    prompt = prompt,
+                    temperature = 0.25,
+                    maxOutputTokens = 6144,
+                    expectJsonObject = false,
+                    enableGeminiGoogleSearch = false
+                )
+            ) {
+                is AiCallResult.Failure -> {
+                    lastError = result.message
+                }
+                is AiCallResult.Success -> {
+                    val parsed = parseModelScores(result.text)
+                    if (parsed.isEmpty()) {
+                        lastError = "JSON non leggibile"
+                    } else {
+                        combinedScores.putAll(parsed)
+                    }
                 }
             }
+        }
+
+        // Single lightweight recovery pass if the model omitted any visible Top-30 item(s).
+        val missingPrimary = topCandidates.take(30).filter { it.id !in combinedScores }
+        if (lastError == null && combinedScores.isNotEmpty() && missingPrimary.isNotEmpty()) {
+            val recoveryPrompt = buildPrompt(
+                likedGames = likedGames,
+                candidates = missingPrimary.take(BATCH_SIZE),
+                userTastePrompt = cleanTastePrompt
+            )
+            when (
+                val recovery = aiClient.generate(
+                    provider = provider,
+                    apiKey = cleanKey,
+                    modelId = effectiveModel,
+                    prompt = recoveryPrompt,
+                    temperature = 0.2,
+                    maxOutputTokens = 4096,
+                    expectJsonObject = false,
+                    enableGeminiGoogleSearch = false
+                )
+            ) {
+                is AiCallResult.Success -> {
+                    combinedScores.putAll(parseModelScores(recovery.text))
+                }
+                is AiCallResult.Failure -> Unit
+            }
+        }
+
+        if (combinedScores.isEmpty()) {
+            val errDetail = lastError ?: "nessun punteggio JSON leggibile"
+            GeminiRerankOutcome(
+                scores = emptyMap(),
+                statusSummary = "⚠️ Errore ${provider.shortLabel} ($effectiveModel) $errDetail ($timeStr)",
+                isError = true
+            )
+        } else {
+            val evaluatedCount = topCandidates.count { it.id in combinedScores }
+            val posCount = combinedScores.values.count { it.score >= 60.0 }
+            val negCount = combinedScores.values.count { it.score <= 38.0 }
+            val partialSuffix = if (lastError != null) " · parziale ($lastError)" else ""
+            GeminiRerankOutcome(
+                scores = combinedScores,
+                statusSummary = "✨ ${provider.shortLabel} ($effectiveModel) attivo ($timeStr) · $evaluatedCount/${topCandidates.size} offerte analizzate: $posCount consigliate, $negCount sconsigliate$partialSuffix",
+                isError = false
+            )
         }
     }
 
@@ -402,6 +441,7 @@ class GeminiReranker(
 
     companion object {
         const val MAX_CANDIDATES = 40
+        const val BATCH_SIZE = 20
 
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)

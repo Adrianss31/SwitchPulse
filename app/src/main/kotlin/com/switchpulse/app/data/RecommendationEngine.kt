@@ -189,14 +189,23 @@ object RecommendationEngine {
                 }
                 combinedAffinity <= -0.16 -> {
                     sentiment = DealMatchSentiment.DISCOURAGED
-                    val aiScore = deal.aiAffinityScore
-                    if (hasAiReason && aiScore != null && aiScore < 42.0) {
+                    if (hasAiReason && deal.aiAffinityScore < 42.0) {
                         reason = deal.aiReason
                         source = DealMatchSource.GEMINI
                     } else {
                         reason = buildAnchorReason(negVectors, dealFeatures, positive = false)
                         source = if (reason != null) DealMatchSource.LOCAL else DealMatchSource.NONE
                     }
+                }
+                deal.aiAffinityScore != null -> {
+                    sentiment = DealMatchSentiment.NONE
+                    val scoreInt = deal.aiAffinityScore.roundToInt()
+                    reason = if (hasAiReason) {
+                        "$scoreInt/100 · ${deal.aiReason}"
+                    } else {
+                        "Neutro ($scoreInt/100)"
+                    }
+                    source = DealMatchSource.GEMINI
                 }
             }
 

@@ -4,6 +4,8 @@ import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.Platform
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -247,5 +249,45 @@ class GeminiRerankerTest {
         )
         assertFalse(sig1 == sig2)
         assertFalse(sig1 == sig3)
+    }
+
+    @Test
+    fun `rerank chunks large lists into 20-item batches and recovers omitted top-30 ids`() = runBlocking {
+        val batch1Json = (1..19).joinToString(",") { idx ->
+            "{\"id\":\"$idx\",\"score\":75,\"badge\":\"Ok $idx\",\"analysis\":\"Valid $idx.\"}"
+        }
+        val batch2Json = (21..25).joinToString(",") { idx ->
+            "{\"id\":\"$idx\",\"score\":70,\"badge\":\"Ok $idx\",\"analysis\":\"Valid $idx.\"}"
+        }
+        val recoveryJson = "[{\"id\":\"20\",\"score\":82,\"badge\":\"Recuperato 20\",\"analysis\":\"Recuperato dal fallback.\"}]"
+
+        fun wrapGemini(jsonText: String) = MockResponse().setResponseCode(200).setBody(
+            """{"candidates":[{"content":{"parts":[{"text":${Json.encodeToString(jsonText)}}]}}]}"""
+        )
+
+        server.enqueue(wrapGemini("[$batch1Json]")) // omits id=20 intentionally
+        server.enqueue(wrapGemini("[$batch2Json]"))
+        server.enqueue(wrapGemini(recoveryJson))
+
+        val candidates = (1..25).map { idx ->
+            sampleDeal(id = idx.toString()).copy(title = "Game $idx", popularityRank = idx)
+        }
+
+        val reranker = GeminiReranker(
+            httpClient = OkHttpClient(),
+            endpointBaseUrl = server.url("/v1beta/models/gemini-3.5-flash-lite:generateContent").toString()
+        )
+        val outcome = reranker.rerank(
+            apiKey = "AIzaTestKey",
+            likedGames = sampleRatedGames(),
+            candidates = candidates,
+            modelId = GeminiModels.FLASH_LITE
+        )
+
+        assertFalse(outcome.isError)
+        assertEquals(25, outcome.scores.size)
+        assertEquals(82.0, outcome.scores.getValue("20").score, 0.001)
+        assertTrue(outcome.statusSummary.contains("25/25 offerte analizzate"))
+        assertEquals(3, server.requestCount)
     }
 }

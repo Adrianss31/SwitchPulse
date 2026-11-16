@@ -239,6 +239,8 @@ private fun SwitchPulseRoot(
                 onRefresh = viewModel::refreshDeals,
                 onResetFilters = viewModel::resetFilters,
                 onOpenUpdateTab = { selectedTab = 2 },
+                onRerankMissingDeals = viewModel::rerankMissingVisibleDeals,
+                onRerankAllNow = viewModel::rerankWithGeminiNow,
                 modifier = Modifier.padding(innerPadding)
             )
 

@@ -2,6 +2,7 @@ package com.switchpulse.app.data
 
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.FilterSettings
+import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.Platform
 import com.switchpulse.app.data.model.PlatformFilter
 import org.junit.Assert.assertEquals
@@ -125,5 +126,52 @@ class DealFilterEngineTest {
         )
 
         assertEquals(listOf("ok-2", "ok-1"), candidates.map { it.id })
+    }
+
+    @Test
+    fun `selectCandidatesForAi aligns with personal taste ranking even when raw hotScore is lower`() {
+        val liked = LikedGame(
+            id = "hades-1",
+            title = "Hades",
+            steamTagIds = listOf(3959, 1716, 4885),
+            steamTagNames = listOf("Roguelite", "Roguelike", "Azione"),
+            gameCategories = listOf("action", "indie"),
+            rating = 5
+        )
+        val matchingLowerHot = sampleDeal("match", Platform.SWITCH_1, 29.99, 14.99, 50, 2, title = "Dead Cells", hotScore = 55.0)
+            .copy(
+                steamReviewCount = 50000,
+                steamTagIds = listOf(3959, 1716, 4885),
+                steamTagNames = listOf("Roguelite", "Roguelike", "Azione"),
+                gameCategories = listOf("action", "indie")
+            )
+        val higherHotUnrelated = sampleDeal("unrelated", Platform.SWITCH_1, 39.99, 19.99, 50, 1, title = "Kart Pro", hotScore = 65.0)
+            .copy(
+                steamReviewCount = 5000,
+                steamTagIds = listOf(699, 701),
+                steamTagNames = listOf("Corse", "Sport"),
+                gameCategories = listOf("racing")
+            )
+
+        val settings = FilterSettings(
+            minDiscountPercent = 30,
+            minRegularPriceEur = 10f,
+            likedGames = listOf(liked),
+            recommendationWeight = 100
+        )
+
+        val visibleTop = DealFilterEngine.filterTopTen(
+            rawDeals = listOf(higherHotUnrelated, matchingLowerHot),
+            settings = settings,
+            limit = 1
+        )
+        val candidates = DealFilterEngine.selectCandidatesForAi(
+            rawDeals = listOf(higherHotUnrelated, matchingLowerHot),
+            settings = settings,
+            limit = 1
+        )
+
+        assertEquals(listOf("match"), visibleTop.map { it.id })
+        assertEquals(listOf("match"), candidates.map { it.id })
     }
 }

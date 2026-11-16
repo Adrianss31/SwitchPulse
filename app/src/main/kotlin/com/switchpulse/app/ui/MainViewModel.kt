@@ -488,6 +488,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun rerankMissingVisibleDeals() {
+        if (transientState.value.isRefreshing) return
+        val visible = uiState.value.deals
+        if (visible.isEmpty()) return
+        viewModelScope.launch {
+            transientState.update { it.copy(isRefreshing = true) }
+            val msg = repository.rerankMissingVisibleDeals(visible).fold(
+                onSuccess = { summary -> summary },
+                onFailure = { err -> "⚠️ ${err.message ?: "Errore completamento AI"}" }
+            )
+            transientState.update {
+                it.copy(
+                    isRefreshing = false,
+                    geminiTestResult = msg,
+                    statusMessage = msg
+                )
+            }
+        }
+    }
+
     fun resetFilters() {
         viewModelScope.launch {
             repository.preferences.resetFilters()

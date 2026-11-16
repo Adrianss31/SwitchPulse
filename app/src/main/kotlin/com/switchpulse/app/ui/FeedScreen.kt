@@ -1,5 +1,6 @@
 package com.switchpulse.app.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.Button
@@ -31,11 +33,16 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,6 +65,12 @@ import com.switchpulse.app.data.model.PlatformFilter
 import com.switchpulse.app.ui.theme.EshopCrimson
 import com.switchpulse.app.ui.theme.EshopCrimsonSoft
 
+private enum class FeedSortMode(val label: String) {
+    PERSONAL("Per Te"),
+    DISCOUNT("Sconto %"),
+    PRICE_ASC("Prezzo €")
+}
+
 @Composable
 fun FeedScreen(
     state: MainUiState,
@@ -68,6 +81,8 @@ fun FeedScreen(
     onRefresh: () -> Unit,
     onResetFilters: () -> Unit,
     onOpenUpdateTab: () -> Unit,
+    onRerankMissingDeals: () -> Unit = {},
+    onRerankAllNow: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val ratedMap = remember(state.settings.likedGames) {
@@ -79,12 +94,42 @@ fun FeedScreen(
         state.settings.likedGames.any { it.isPositiveRating || it.isNegativeRating }
     }
 
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var sortMode by rememberSaveable { mutableStateOf(FeedSortMode.PERSONAL) }
+
+    val displayedDeals = remember(state.deals, searchQuery, sortMode) {
+        val q = searchQuery.trim().lowercase()
+        val filtered = if (q.isEmpty()) {
+            state.deals
+        } else {
+            state.deals.filter { deal ->
+                deal.title.lowercase().contains(q) ||
+                    deal.publisher.lowercase().contains(q) ||
+                    (deal.developer?.lowercase()?.contains(q) == true) ||
+                    deal.steamTagNames.any { it.lowercase().contains(q) } ||
+                    deal.gameCategories.any { it.lowercase().contains(q) }
+            }
+        }
+        when (sortMode) {
+            FeedSortMode.PERSONAL -> filtered
+            FeedSortMode.DISCOUNT -> filtered.sortedWith(
+                compareByDescending<Deal> { it.discountPercent }
+                    .thenByDescending { it.personalScore }
+            )
+            FeedSortMode.PRICE_ASC -> filtered.sortedWith(
+                compareBy<Deal> { it.discountedPriceEur }
+                    .thenByDescending { it.personalScore }
+            )
+        }
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         // Segmented filter row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -110,7 +155,7 @@ fun FeedScreen(
                                 else Color.Transparent
                             )
                             .clickable { onSelectPlatform(option) }
-                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -124,7 +169,7 @@ fun FeedScreen(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 if (hasTasteSignals) {
                     val forYouActive = state.settings.forYouOnlyMode
@@ -136,7 +181,7 @@ fun FeedScreen(
                                 else MaterialTheme.colorScheme.surfaceContainerHigh
                             )
                             .clickable { onToggleForYou(!forYouActive) }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                            .padding(horizontal = 9.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
@@ -154,12 +199,108 @@ fun FeedScreen(
                     }
                 }
 
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (searchExpanded || searchQuery.isNotBlank()) EshopCrimson
+                            else MaterialTheme.colorScheme.surfaceContainerHigh
+                        )
+                        .clickable {
+                            if (searchExpanded && searchQuery.isBlank()) {
+                                searchExpanded = false
+                            } else {
+                                searchExpanded = !searchExpanded
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Search,
+                        contentDescription = "Cerca nelle offerte",
+                        tint = if (searchExpanded || searchQuery.isNotBlank()) {
+                            Color.White
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
                 Text(
-                    text = "Top ${state.deals.size}",
+                    text = "${displayedDeals.size}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+
+        if (searchExpanded || searchQuery.isNotBlank()) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Cerca titolo, studio o genere in offerta...") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    IconButton(onClick = {
+                        searchQuery = ""
+                        searchExpanded = false
+                    }) {
+                        Icon(Icons.Rounded.Close, contentDescription = "Chiudi ricerca", modifier = Modifier.size(18.dp))
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+
+        // Quick sort strip + interactive AI status pill
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FeedSortMode.entries.forEach { mode ->
+                val active = sortMode == mode
+                Surface(
+                    onClick = { sortMode = mode },
+                    shape = RoundedCornerShape(999.dp),
+                    color = if (active) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    }
+                ) {
+                    Text(
+                        text = mode.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                        color = if (active) {
+                            MaterialTheme.colorScheme.onSecondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+            }
+        }
+
+        if (state.deals.isNotEmpty()) {
+            FeedAiStatusPill(
+                state = state,
+                hasTasteSignals = hasTasteSignals,
+                onOpenSettingsTab = onOpenUpdateTab,
+                onRerankMissingDeals = onRerankMissingDeals,
+                onRerankAllNow = onRerankAllNow,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
         }
 
         // Update available banner
@@ -268,9 +409,33 @@ fun FeedScreen(
                 }
             }
 
+            displayedDeals.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "Nessun titolo corrisponde a \"$searchQuery\".",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        FilledTonalButton(onClick = {
+                            searchQuery = ""
+                            searchExpanded = false
+                        }) {
+                            Text("Svuota ricerca")
+                        }
+                    }
+                }
+            }
+
             else -> {
-                val hero = state.deals.first()
-                val rest = state.deals.drop(1)
+                val hero = displayedDeals.first()
+                val rest = displayedDeals.drop(1)
 
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -464,10 +629,11 @@ private fun HeroDealCard(
             Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
                 val matchLabel = formatMatchDisplay(deal)
                 if (matchLabel != null) {
-                    val pillColor = if (deal.matchSentiment == DealMatchSentiment.DISCOURAGED) {
-                        Color(0xD9B45309)
-                    } else {
-                        EshopCrimson.copy(alpha = 0.88f)
+                    val pillColor = when {
+                        deal.matchSentiment == DealMatchSentiment.DISCOURAGED -> Color(0xD9B45309)
+                        deal.matchSentiment == DealMatchSentiment.NONE && deal.matchSource == DealMatchSource.GEMINI ->
+                            Color(0xC71E293B)
+                        else -> EshopCrimson.copy(alpha = 0.88f)
                     }
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -625,6 +791,8 @@ private fun DealRowCard(
                     Spacer(modifier = Modifier.height(2.dp))
                     val reasonColor = when {
                         deal.matchSentiment == DealMatchSentiment.DISCOURAGED -> Color(0xFFD97706)
+                        deal.matchSentiment == DealMatchSentiment.NONE && deal.matchSource == DealMatchSource.GEMINI ->
+                            MaterialTheme.colorScheme.onSurfaceVariant
                         MaterialTheme.colorScheme.background.red < 0.3f -> EshopCrimsonSoft
                         else -> EshopCrimson
                     }
@@ -687,3 +855,122 @@ private fun DealRowCard(
         }
     }
 }
+
+@Composable
+private fun FeedAiStatusPill(
+    state: MainUiState,
+    hasTasteSignals: Boolean,
+    onOpenSettingsTab: () -> Unit,
+    onRerankMissingDeals: () -> Unit,
+    onRerankAllNow: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val task = state.settings.rerankTarget
+    val hasKey = state.settings.hasKeyFor(task.provider)
+    val analyzedCount = state.deals.count { it.aiAffinityScore != null }
+    val totalCount = state.deals.size
+    val missingCount = (totalCount - analyzedCount).coerceAtLeast(0)
+    val statusText = state.settings.geminiStatusSummary
+    val isError = statusText.startsWith("⚠️")
+
+    val (label, actionLabel, onCardClick, onActionClick) = when {
+        !hasKey -> Quadruple(
+            "Motore locale · Aggiungi API key ${task.provider.shortLabel} in Filtri",
+            "Configura",
+            onOpenSettingsTab,
+            onOpenSettingsTab
+        )
+        isError -> Quadruple(
+            statusText.take(64),
+            "Riprova",
+            onOpenSettingsTab,
+            onRerankAllNow
+        )
+        analyzedCount > 0 && missingCount > 0 -> Quadruple(
+            "✨ ${task.provider.shortLabel} · $analyzedCount/$totalCount valutate",
+            "Completa ($missingCount)",
+            onOpenSettingsTab,
+            onRerankMissingDeals
+        )
+        analyzedCount > 0 -> Quadruple(
+            "✨ ${task.provider.shortLabel} · ${task.modelIdShort()} · $analyzedCount/$totalCount valutate",
+            null,
+            onOpenSettingsTab,
+            onRerankAllNow
+        )
+        !hasTasteSignals -> Quadruple(
+            "✨ ${task.provider.shortLabel} pronto · Vota un gioco in Libreria",
+            null,
+            onOpenSettingsTab,
+            onOpenSettingsTab
+        )
+        else -> Quadruple(
+            "✨ ${task.provider.shortLabel} pronto · Analisi AI non ancora eseguita",
+            "Analizza",
+            onOpenSettingsTab,
+            onRerankAllNow
+        )
+    }
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = if (isError) {
+            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        border = BorderStroke(
+            1.dp,
+            if (isError) MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
+            else MaterialTheme.colorScheme.outlineVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onCardClick)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isError) {
+                    MaterialTheme.colorScheme.onErrorContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(end = 8.dp)
+            )
+            if (state.isRefreshing && hasKey) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = EshopCrimson
+                )
+            } else if (actionLabel != null) {
+                Surface(
+                    onClick = onActionClick,
+                    shape = RoundedCornerShape(999.dp),
+                    color = EshopCrimson.copy(alpha = 0.15f)
+                ) {
+                    Text(
+                        text = actionLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = EshopCrimson,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun com.switchpulse.app.data.model.AiTaskTarget.modelIdShort(): String =
+    modelId.substringAfter('/').removeSuffix(":free").take(22)
+
+private data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)

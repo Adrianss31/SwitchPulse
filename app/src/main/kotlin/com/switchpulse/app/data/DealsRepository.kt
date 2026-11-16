@@ -7,6 +7,7 @@ import com.switchpulse.app.data.local.PreferencesStore
 import com.switchpulse.app.data.model.AiDiscoveryPick
 import com.switchpulse.app.data.model.AiProvider
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
 import com.switchpulse.app.data.model.GamerSoulProfile
@@ -170,13 +171,78 @@ class DealsRepository(
             }
         }
 
+        // Propagate AI evaluations across Switch 1 / Switch 2 sibling editions of the same normalized title.
+        val scoresByNormTitle = LinkedHashMap<String, com.switchpulse.app.data.remote.SemanticRerankEntry>()
+        aiTargets.forEach { target ->
+            val entry = outcome.scores[target.id] ?: return@forEach
+            val norm = DealTitleNormalizer.normalize(target.title)
+            scoresByNormTitle.putIfAbsent(norm, entry)
+        }
+
         return deals.map { deal ->
             val entry = outcome.scores[deal.id]
+                ?: scoresByNormTitle[DealTitleNormalizer.normalize(deal.title)]
             deal.copy(
                 aiAffinityScore = entry?.score,
                 aiReason = entry?.reason,
                 aiDetailedReason = entry?.detailedReason
             )
+        }
+    }
+
+    suspend fun rerankMissingVisibleDeals(visibleDeals: List<Deal>): Result<String> {
+        return runCatching {
+            val settings = preferences.getSettings()
+            val rerankTask = settings.rerankTarget
+            val rerankKey = settings.apiKeyFor(rerankTask.provider)
+            if (rerankKey.isBlank()) {
+                error("Inserisci prima una API key per ${rerankTask.provider.displayName} in Impostazioni.")
+            }
+            val missing = visibleDeals
+                .filter { it.aiAffinityScore == null }
+                .take(GeminiReranker.MAX_CANDIDATES)
+            if (missing.isEmpty()) {
+                return@runCatching "Tutte le offerte visibili sono già valutate"
+            }
+
+            val outcome = geminiReranker.rerank(
+                apiKey = rerankKey,
+                likedGames = settings.likedGames,
+                candidates = missing,
+                modelId = rerankTask.modelId,
+                userTastePrompt = settings.userTastePrompt,
+                provider = rerankTask.provider
+            )
+            if (outcome.scores.isEmpty()) {
+                preferences.saveGeminiRunState(outcome.statusSummary, "")
+                return@runCatching outcome.statusSummary
+            }
+
+            val byNorm = LinkedHashMap<String, com.switchpulse.app.data.remote.SemanticRerankEntry>()
+            missing.forEach { target ->
+                val entry = outcome.scores[target.id] ?: return@forEach
+                byNorm.putIfAbsent(DealTitleNormalizer.normalize(target.title), entry)
+            }
+
+            val mergedDeals = preferences.getCachedDeals().map { deal ->
+                val newlyEvaluated = outcome.scores[deal.id]
+                    ?: byNorm[DealTitleNormalizer.normalize(deal.title)]
+                if (newlyEvaluated != null) {
+                    deal.copy(
+                        aiAffinityScore = newlyEvaluated.score,
+                        aiReason = newlyEvaluated.reason,
+                        aiDetailedReason = newlyEvaluated.detailedReason
+                    )
+                } else {
+                    deal
+                }
+            }
+            preferences.saveCachedDeals(mergedDeals)
+            val totalEvaluated = mergedDeals.count { it.aiAffinityScore != null }
+            val msg = "✨ ${rerankTask.provider.shortLabel} (${rerankTask.modelId}) · +${outcome.scores.size} completate ($totalEvaluated totali valutate)"
+            preferences.saveGeminiRunState(msg, settings.geminiSignature)
+            updateWidgetForSettings(mergedDeals, settings)
+            msg
         }
     }
 

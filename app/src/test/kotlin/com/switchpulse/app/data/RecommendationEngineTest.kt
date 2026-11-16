@@ -284,4 +284,39 @@ class RecommendationEngineTest {
         assertTrue(bars.first().isPositive)
         assertFalse(bars.any { it.label == "Singleplayer" || it.label == "Controller" || it.label == "Avventura" })
     }
+
+    @Test
+    fun `neutral AI evaluated deal retains NONE sentiment and GEMINI source label`() {
+        val liked = LikedGame(id = "g1", title = "Hades", steamTagNames = listOf("Roguelite"), rating = 5)
+        val neutralAiDeal = Deal(
+            id = "d-neutral",
+            nsuid = null,
+            title = "Solid Platformer",
+            publisher = "Indie Pub",
+            platform = Platform.SWITCH_1,
+            regularPriceEur = 24.99,
+            discountedPriceEur = 12.49,
+            discountPercent = 50,
+            endsAtIso = null,
+            popularityRank = 10,
+            hotScore = 70.0,
+            steamReviewCount = 1200,
+            steamTagNames = listOf("Platform"),
+            eshopUrl = "https://www.nintendo.com/solid",
+            imageUrl = "",
+            aiAffinityScore = 52.0,
+            aiReason = "Action lineare ma fluido"
+        )
+
+        val evaluated = RecommendationEngine.applyRecommendations(
+            deals = listOf(neutralAiDeal),
+            settings = FilterSettings(likedGames = listOf(liked), recommendationWeight = 50)
+        ).first()
+
+        assertEquals(DealMatchSentiment.NONE, evaluated.matchSentiment)
+        assertEquals(DealMatchSource.GEMINI, evaluated.matchSource)
+        val reason = evaluated.matchReason.orEmpty()
+        assertTrue(reason.contains("52/100"))
+        assertTrue(reason.contains("Action lineare ma fluido"))
+    }
 }
