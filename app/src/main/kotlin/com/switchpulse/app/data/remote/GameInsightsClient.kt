@@ -22,6 +22,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -40,6 +41,8 @@ class GameInsightsClient(
     private val metacriticBaseUrl: String? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    // Avoid wasting Free-Tier RPM on repeated google_search 400/403/429 failures for the same key.
+    private val groundingBlockedUntilMs = ConcurrentHashMap<String, Long>()
 
     suspend fun fetchInsights(
         deal: Deal,
@@ -209,6 +212,11 @@ class GameInsightsClient(
             .trim('-')
     }
 
+    private fun keyFingerprint(apiKey: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(apiKey.toByteArray())
+        return digest.joinToString("") { "%02x".format(it) }.take(16)
+    }
+
     private fun fetchWithGeminiAndFallback(
         deal: Deal,
         apiKey: String,
@@ -216,16 +224,25 @@ class GameInsightsClient(
         likedGames: List<LikedGame>,
         userTastePrompt: String
     ): GeminiInsightsResult {
-        val groundedAttempt = executeGeminiInsightsCall(
-            deal = deal,
-            apiKey = apiKey,
-            modelId = modelId,
-            likedGames = likedGames,
-            userTastePrompt = userTastePrompt,
-            useGoogleSearch = true
-        )
-        if (groundedAttempt.payload != null) {
-            return groundedAttempt.copy(mode = AiMode.GROUNDED_SEARCH)
+        val keyFp = keyFingerprint(apiKey)
+        val blockedUntil = groundingBlockedUntilMs[keyFp] ?: 0L
+        val skipGrounding = System.currentTimeMillis() < blockedUntil
+
+        val groundedAttempt = if (!skipGrounding) {
+            executeGeminiInsightsCall(
+                deal = deal,
+                apiKey = apiKey,
+                modelId = modelId,
+                likedGames = likedGames,
+                userTastePrompt = userTastePrompt,
+                useGoogleSearch = true
+            ).also { res ->
+                if (res.payload != null) {
+                    return res.copy(mode = AiMode.GROUNDED_SEARCH)
+                }
+            }
+        } else {
+            null
         }
 
         // Fallback for Free Tier keys / unavailable Search Grounding on Gemini 3+/4.
@@ -238,10 +255,14 @@ class GameInsightsClient(
             useGoogleSearch = false
         )
         if (directAttempt.payload != null) {
+            val code = groundedAttempt?.httpCode
+            if (code == 400 || code == 403 || code == 429) {
+                groundingBlockedUntilMs[keyFp] = System.currentTimeMillis() + 24 * 60 * 60 * 1000L
+            }
             return directAttempt.copy(mode = AiMode.DIRECT_KNOWLEDGE)
         }
 
-        val combinedError = directAttempt.errorMessage ?: groundedAttempt.errorMessage
+        val combinedError = directAttempt.errorMessage ?: groundedAttempt?.errorMessage
         return GeminiInsightsResult(
             payload = null,
             mode = AiMode.NONE,
@@ -304,7 +325,12 @@ class GameInsightsClient(
                     json.decodeFromString<GeminiErrorEnvelope>(raw).error?.message
                 }.getOrNull().orEmpty().trim()
                 val shortErr = "HTTP ${response.code}${if (err.isNotBlank()) ": ${err.take(120)}" else ""}"
-                return@use GeminiInsightsResult(payload = null, mode = AiMode.NONE, errorMessage = shortErr)
+                return@use GeminiInsightsResult(
+                    payload = null,
+                    mode = AiMode.NONE,
+                    errorMessage = shortErr,
+                    httpCode = response.code
+                )
             }
 
             val envelope = json.decodeFromString<GeminiGenerateResponse>(raw)
@@ -486,7 +512,8 @@ private enum class AiMode {
 private data class GeminiInsightsResult(
     val payload: GroundedInsightsPayload?,
     val mode: AiMode,
-    val errorMessage: String?
+    val errorMessage: String?,
+    val httpCode: Int? = null
 )
 
 @Serializable

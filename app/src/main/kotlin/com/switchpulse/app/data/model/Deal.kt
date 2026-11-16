@@ -221,6 +221,15 @@ data class AiDiscoveryPick(
     }
 }
 
+@Serializable
+data class GeminiModelInfo(
+    val id: String,
+    val displayName: String,
+    val description: String = "",
+    val inputTokenLimit: Int = 0,
+    val outputTokenLimit: Int = 0
+)
+
 data class FilterSettings(
     val minDiscountPercent: Int = 30,
     val minRegularPriceEur: Float = 10f,
@@ -234,6 +243,11 @@ data class FilterSettings(
     val forYouOnlyMode: Boolean = false,
     val geminiApiKey: String = "",
     val geminiModel: String = "gemini-4-hydrogen",
+    val geminiRerankModel: String = "gemini-3.5-flash-lite",
+    val geminiInsightsModel: String = "gemini-3.5-flash-lite",
+    val geminiSoulModel: String = "gemini-4-hydrogen",
+    val availableGeminiModels: List<GeminiModelInfo> = emptyList(),
+    val geminiModelsUpdatedAtMs: Long = 0L,
     val geminiStatusSummary: String = "",
     val geminiSignature: String = "",
     val userTastePrompt: String = "",

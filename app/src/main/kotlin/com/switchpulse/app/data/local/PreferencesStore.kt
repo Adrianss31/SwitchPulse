@@ -18,6 +18,7 @@ import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
 import com.switchpulse.app.data.model.GamerSoulProfile
+import com.switchpulse.app.data.model.GeminiModelInfo
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.PlatformFilter
 import com.switchpulse.app.data.remote.GeminiModels
@@ -50,6 +51,9 @@ class PreferencesStore(private val context: Context) {
         val discoveryPicks = prefs[KEY_AI_DISCOVERY_JSON]?.takeIf { it.isNotBlank() }?.let { raw ->
             runCatching { json.decodeFromString<List<AiDiscoveryPick>>(raw) }.getOrDefault(emptyList())
         }.orEmpty()
+        val availableModels = prefs[KEY_AVAILABLE_GEMINI_MODELS_JSON]?.takeIf { it.isNotBlank() }?.let { raw ->
+            runCatching { json.decodeFromString<List<GeminiModelInfo>>(raw) }.getOrDefault(emptyList())
+        }.orEmpty()
 
         FilterSettings(
             minDiscountPercent = prefs[KEY_MIN_DISCOUNT] ?: 30,
@@ -64,6 +68,11 @@ class PreferencesStore(private val context: Context) {
             forYouOnlyMode = prefs[KEY_FOR_YOU_MODE] ?: false,
             geminiApiKey = prefs[KEY_GEMINI_API_KEY] ?: "",
             geminiModel = prefs[KEY_GEMINI_MODEL]?.takeIf { it.isNotBlank() } ?: GeminiModels.HYDROGEN,
+            geminiRerankModel = prefs[KEY_GEMINI_MODEL_RERANK]?.takeIf { it.isNotBlank() } ?: GeminiModels.FLASH_LITE,
+            geminiInsightsModel = prefs[KEY_GEMINI_MODEL_INSIGHTS]?.takeIf { it.isNotBlank() } ?: GeminiModels.FLASH_LITE,
+            geminiSoulModel = prefs[KEY_GEMINI_MODEL_SOUL]?.takeIf { it.isNotBlank() } ?: GeminiModels.HYDROGEN,
+            availableGeminiModels = availableModels,
+            geminiModelsUpdatedAtMs = prefs[KEY_GEMINI_MODELS_UPDATED_MS] ?: 0L,
             geminiStatusSummary = prefs[KEY_GEMINI_STATUS_SUMMARY] ?: "",
             geminiSignature = prefs[KEY_GEMINI_SIGNATURE] ?: "",
             userTastePrompt = prefs[KEY_USER_TASTE_PROMPT] ?: "",
@@ -257,19 +266,53 @@ class PreferencesStore(private val context: Context) {
 
     suspend fun updateGeminiApiKey(apiKey: String) {
         context.dataStore.edit {
-            it[KEY_GEMINI_API_KEY] = apiKey.trim()
+            val clean = apiKey.trim()
+            it[KEY_GEMINI_API_KEY] = clean
             it[KEY_GEMINI_SIGNATURE] = ""
-            if (apiKey.trim().isBlank()) {
+            if (clean.isBlank()) {
                 it[KEY_GEMINI_STATUS_SUMMARY] = ""
+                it.remove(KEY_AVAILABLE_GEMINI_MODELS_JSON)
+                it.remove(KEY_GEMINI_MODELS_UPDATED_MS)
             }
         }
     }
 
     suspend fun updateGeminiModel(modelId: String) {
-        val clean = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
+        updateGeminiRerankModel(modelId)
+    }
+
+    suspend fun updateGeminiRerankModel(modelId: String) {
+        val clean = modelId.trim().ifBlank { GeminiModels.FLASH_LITE }
         context.dataStore.edit {
+            it[KEY_GEMINI_MODEL_RERANK] = clean
             it[KEY_GEMINI_MODEL] = clean
             it[KEY_GEMINI_SIGNATURE] = ""
+        }
+    }
+
+    suspend fun updateGeminiInsightsModel(modelId: String) {
+        val clean = modelId.trim().ifBlank { GeminiModels.FLASH_LITE }
+        context.dataStore.edit {
+            it[KEY_GEMINI_MODEL_INSIGHTS] = clean
+        }
+    }
+
+    suspend fun updateGeminiSoulModel(modelId: String) {
+        val clean = modelId.trim().ifBlank { GeminiModels.HYDROGEN }
+        context.dataStore.edit {
+            it[KEY_GEMINI_MODEL_SOUL] = clean
+        }
+    }
+
+    suspend fun saveAvailableGeminiModels(models: List<GeminiModelInfo>, updatedAtMs: Long = System.currentTimeMillis()) {
+        context.dataStore.edit {
+            if (models.isEmpty()) {
+                it.remove(KEY_AVAILABLE_GEMINI_MODELS_JSON)
+                it.remove(KEY_GEMINI_MODELS_UPDATED_MS)
+            } else {
+                it[KEY_AVAILABLE_GEMINI_MODELS_JSON] = json.encodeToString(models)
+                it[KEY_GEMINI_MODELS_UPDATED_MS] = updatedAtMs
+            }
         }
     }
 
@@ -370,6 +413,11 @@ class PreferencesStore(private val context: Context) {
         private val KEY_FOR_YOU_MODE = booleanPreferencesKey("for_you_mode")
         private val KEY_GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
         private val KEY_GEMINI_MODEL = stringPreferencesKey("gemini_model")
+        private val KEY_GEMINI_MODEL_RERANK = stringPreferencesKey("gemini_model_rerank")
+        private val KEY_GEMINI_MODEL_INSIGHTS = stringPreferencesKey("gemini_model_insights")
+        private val KEY_GEMINI_MODEL_SOUL = stringPreferencesKey("gemini_model_soul")
+        private val KEY_AVAILABLE_GEMINI_MODELS_JSON = stringPreferencesKey("available_gemini_models_json")
+        private val KEY_GEMINI_MODELS_UPDATED_MS = longPreferencesKey("gemini_models_updated_ms")
         private val KEY_GEMINI_STATUS_SUMMARY = stringPreferencesKey("gemini_status_summary")
         private val KEY_GEMINI_SIGNATURE = stringPreferencesKey("gemini_signature")
         private val KEY_USER_TASTE_PROMPT = stringPreferencesKey("user_taste_prompt")

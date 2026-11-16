@@ -367,7 +367,7 @@ fun GameDetailSheet(
                                         modifier = Modifier.size(13.dp)
                                     )
                                     Text(
-                                        text = "${settings.geminiModel} · ${scoreVal ?: "--"}/100",
+                                        text = "${settings.geminiRerankModel} · ${scoreVal ?: "--"}/100",
                                         color = badgeFg,
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                                     )

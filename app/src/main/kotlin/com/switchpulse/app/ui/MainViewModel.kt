@@ -49,6 +49,7 @@ data class MainUiState(
     val isLoadingInsights: Boolean = false,
     val geminiTestResult: String? = null,
     val isTestingGemini: Boolean = false,
+    val isLoadingModels: Boolean = false,
     val isGeneratingSoul: Boolean = false,
     val isDiscoveringGames: Boolean = false,
     val showDiscoverySheet: Boolean = false
@@ -66,6 +67,7 @@ private data class TransientUiState(
     val isLoadingInsights: Boolean = false,
     val geminiTestResult: String? = null,
     val isTestingGemini: Boolean = false,
+    val isLoadingModels: Boolean = false,
     val isGeneratingSoul: Boolean = false,
     val isDiscoveringGames: Boolean = false,
     val showDiscoverySheet: Boolean = false
@@ -101,6 +103,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             isLoadingInsights = transient.isLoadingInsights,
             geminiTestResult = transient.geminiTestResult,
             isTestingGemini = transient.isTestingGemini,
+            isLoadingModels = transient.isLoadingModels,
             isGeneratingSoul = transient.isGeneratingSoul,
             isDiscoveringGames = transient.isDiscoveringGames,
             showDiscoverySheet = transient.showDiscoverySheet
@@ -121,6 +124,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (settings.autoCheckUpdates && settings.githubRepo.isNotBlank()) {
                 checkForUpdates(silentIfUpToDate = true)
+            }
+            val oneDayMs = 24 * 60 * 60 * 1000L
+            if (settings.geminiApiKey.isNotBlank() &&
+                (settings.availableGeminiModels.isEmpty() || System.currentTimeMillis() - settings.geminiModelsUpdatedAtMs > oneDayMs)
+            ) {
+                refreshAvailableGeminiModels(silent = true)
             }
         }
     }
@@ -356,22 +365,76 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setGeminiApiKey(apiKey: String) {
         viewModelScope.launch {
             repository.preferences.updateGeminiApiKey(apiKey)
-            val msg = if (apiKey.trim().isBlank()) {
+            val clean = apiKey.trim()
+            val msg = if (clean.isBlank()) {
                 "Chiave Gemini rimossa (attivo motore locale a micro-tag)"
             } else {
-                "Chiave Gemini salvata · Tocca \"Testa chiave\" o \"Ricalcola AI ora\""
+                "Chiave Gemini salvata · Caricamento modelli..."
             }
             transientState.update { it.copy(statusMessage = msg, geminiTestResult = null) }
+            if (clean.isNotBlank()) {
+                refreshAvailableGeminiModels(silent = true)
+            }
         }
     }
 
     fun setGeminiModel(modelId: String) {
+        setGeminiRerankModel(modelId)
+    }
+
+    fun setGeminiRerankModel(modelId: String) {
         viewModelScope.launch {
-            repository.preferences.updateGeminiModel(modelId)
+            repository.preferences.updateGeminiRerankModel(modelId)
             transientState.update {
                 it.copy(
-                    statusMessage = "Modello AI impostato su $modelId",
+                    statusMessage = "Modello Classifica impostato su $modelId",
                     geminiTestResult = null
+                )
+            }
+        }
+    }
+
+    fun setGeminiInsightsModel(modelId: String) {
+        viewModelScope.launch {
+            repository.preferences.updateGeminiInsightsModel(modelId)
+            transientState.update {
+                it.copy(
+                    statusMessage = "Modello Schede gioco impostato su $modelId",
+                    geminiTestResult = null
+                )
+            }
+        }
+    }
+
+    fun setGeminiSoulModel(modelId: String) {
+        viewModelScope.launch {
+            repository.preferences.updateGeminiSoulModel(modelId)
+            transientState.update {
+                it.copy(
+                    statusMessage = "Modello Anima & Consigli impostato su $modelId",
+                    geminiTestResult = null
+                )
+            }
+        }
+    }
+
+    fun refreshAvailableGeminiModels(silent: Boolean = false) {
+        if (transientState.value.isLoadingModels) return
+        viewModelScope.launch {
+            transientState.update { it.copy(isLoadingModels = true) }
+            val result = repository.refreshAvailableGeminiModels()
+            val msg = if (silent) {
+                null
+            } else {
+                result.fold(
+                    onSuccess = { models -> "✨ ${models.size} modelli Gemini aggiornati da Google" },
+                    onFailure = { err -> "⚠️ Aggiornamento modelli fallito: ${err.message ?: "errore di rete"}" }
+                )
+            }
+            transientState.update {
+                it.copy(
+                    isLoadingModels = false,
+                    statusMessage = msg ?: it.statusMessage
                 )
             }
         }

@@ -1,6 +1,7 @@
 package com.switchpulse.app.data.remote
 
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.GeminiModelInfo
 import com.switchpulse.app.data.model.LikedGame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,13 +24,58 @@ object GeminiModels {
     const val FLASH_LITE = "gemini-3.5-flash-lite"
 
     val OPTIONS: List<Pair<String, String>> = listOf(
-        HYDROGEN to "Gemini 4 Hydrogen (consigliato)",
+        HYDROGEN to "Gemini 4 Hydrogen (potente)",
         ARGON to "Gemini 4 Argon (ragionamento)",
-        FLASH_LITE to "Gemini 3.5 Flash-Lite (rapido)"
+        FLASH_LITE to "Gemini 3.5 Flash-Lite (veloce / free tier)"
     )
 
+    val DEFAULT_INFOS: List<GeminiModelInfo> = listOf(
+        GeminiModelInfo(
+            id = FLASH_LITE,
+            displayName = "Gemini 3.5 Flash-Lite",
+            description = "Leggero e rapido, ideale per analisi brevi e free tier"
+        ),
+        GeminiModelInfo(
+            id = HYDROGEN,
+            displayName = "Gemini 4 Hydrogen",
+            description = "Bilanciato ad alta qualità per profili e consigli profondi"
+        ),
+        GeminiModelInfo(
+            id = ARGON,
+            displayName = "Gemini 4 Argon",
+            description = "Ragionamento esteso"
+        )
+    )
+
+    fun resolveModelsList(
+        dynamicModels: List<GeminiModelInfo>,
+        selectedIds: List<String> = emptyList()
+    ): List<GeminiModelInfo> {
+        val byId = LinkedHashMap<String, GeminiModelInfo>()
+        dynamicModels.forEach { info ->
+            val id = info.id.trim()
+            if (id.isNotBlank()) byId[id] = info.copy(id = id)
+        }
+        DEFAULT_INFOS.forEach { info ->
+            byId.putIfAbsent(info.id, info)
+        }
+        selectedIds.forEach { rawId ->
+            val id = rawId.trim()
+            if (id.isNotBlank() && !byId.containsKey(id)) {
+                byId[id] = GeminiModelInfo(id = id, displayName = id)
+            }
+        }
+        return byId.values.toList()
+    }
+
+    private val MAJOR_VERSION_REGEX = Regex("^gemini-(\\d+)(?:\\.(\\d+))?\\b", RegexOption.IGNORE_CASE)
+
     fun thinkingConfigFor(modelId: String): GeminiThinkingConfig? {
-        return if (modelId.startsWith("gemini-4") || modelId.startsWith("gemini-3")) {
+        val match = MAJOR_VERSION_REGEX.find(modelId.trim()) ?: return null
+        val major = match.groupValues.getOrNull(1)?.toIntOrNull() ?: return null
+        // thinkingLevel ("low"/"high") applies cleanly to Gemini 3+ (including 4, 5, etc.);
+        // older 2.x models use different thinking fields or none at all.
+        return if (major >= 3) {
             GeminiThinkingConfig(thinkingLevel = "low")
         } else {
             null

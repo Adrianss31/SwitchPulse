@@ -262,4 +262,45 @@ class GameInsightsClientTest {
         assertEquals("Buon affare", insights.aiVerdict)
         assertTrue(insights.sourceLabel.contains("Metacritic"))
     }
+
+    @Test
+    fun `fetchInsights skips google_search on subsequent calls once Free Tier returns 429 for grounding`() = runBlocking {
+        var groundingAttempts = 0
+        var directAttempts = 0
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.requestUrl?.encodedPath.orEmpty()
+                return when {
+                    path.endsWith("/api/appdetails") -> MockResponse().setResponseCode(200).setBody("""{"1145360":{"success":true,"data":{}}}""")
+                    path.endsWith(":generateContent") -> {
+                        val reqBody = request.body.readUtf8()
+                        if (reqBody.contains("google_search")) {
+                            groundingAttempts++
+                            MockResponse().setResponseCode(429).setBody("""{"error":{"code":429,"message":"Search grounding quota exceeded on Free Tier"}}""")
+                        } else {
+                            directAttempts++
+                            MockResponse().setResponseCode(200).setBody(
+                                """{"candidates":[{"content":{"parts":[{"text":"{\"metacriticScore\":90,\"hltbMainHours\":\"20 ore\",\"verdict\":\"Consigliatissimo\",\"summaryNote\":\"Ottimo.\"}"}]}}]}"""
+                            )
+                        }
+                    }
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val client = GameInsightsClient(
+            httpClient = OkHttpClient(),
+            steamAppDetailsUrl = server.url("/api/appdetails").toString(),
+            geminiEndpointOverride = server.url("/v1beta/models/gemini-3.5-flash-lite:generateContent").toString()
+        )
+
+        val first = client.fetchInsights(deal = sampleDeal(), geminiApiKey = "AIzaFreeTierKey", geminiModel = GeminiModels.FLASH_LITE)
+        val second = client.fetchInsights(deal = sampleDeal().copy(id = "deal-2", title = "Dead Cells"), geminiApiKey = "AIzaFreeTierKey", geminiModel = GeminiModels.FLASH_LITE)
+
+        assertEquals("Consigliatissimo", first.aiVerdict)
+        assertEquals("Consigliatissimo", second.aiVerdict)
+        assertEquals(1, groundingAttempts)
+        assertEquals(2, directAttempts)
+    }
 }

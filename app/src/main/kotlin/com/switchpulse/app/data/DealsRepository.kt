@@ -9,8 +9,10 @@ import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameExternalInsights
 import com.switchpulse.app.data.model.GamerSoulProfile
+import com.switchpulse.app.data.model.GeminiModelInfo
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.remote.GameInsightsClient
+import com.switchpulse.app.data.remote.GeminiModelsClient
 import com.switchpulse.app.data.remote.GeminiReranker
 import com.switchpulse.app.data.remote.GeminiSoulClient
 import com.switchpulse.app.data.remote.NintendoEshopClient
@@ -25,6 +27,7 @@ class DealsRepository(
     private val geminiReranker: GeminiReranker = GeminiReranker(),
     private val insightsClient: GameInsightsClient = GameInsightsClient(),
     private val soulClient: GeminiSoulClient = GeminiSoulClient(),
+    private val modelsClient: GeminiModelsClient = GeminiModelsClient(),
     val coverCache: CoverBitmapCache = CoverBitmapCache(context)
 ) {
     val settingsFlow: Flow<FilterSettings> = preferences.settingsFlow
@@ -108,7 +111,7 @@ class DealsRepository(
             val msg = when {
                 settings.geminiApiKey.isBlank() -> ""
                 ratedGames.isEmpty() ->
-                    "Chiave salvata (${settings.geminiModel}) · assegna almeno un voto 1–2★ o 4–5★ nella Libreria"
+                    "Chiave salvata (${settings.geminiRerankModel}) · assegna almeno un voto 1–2★ o 4–5★ nella Libreria"
                 else -> "Peso raccomandazioni a 0% · AI in pausa"
             }
             if (msg.isNotBlank() || settings.geminiStatusSummary.isNotBlank()) {
@@ -124,7 +127,7 @@ class DealsRepository(
             .ifEmpty { deals.sortedByDescending { it.hotScore }.take(GeminiReranker.MAX_CANDIDATES) }
 
         val signature = geminiReranker.computeSignature(
-            modelId = settings.geminiModel,
+            modelId = settings.geminiRerankModel,
             likedGames = settings.likedGames,
             candidates = aiTargets,
             userTastePrompt = settings.userTastePrompt
@@ -133,7 +136,7 @@ class DealsRepository(
         if (!force && signature == settings.geminiSignature && hasCachedAi) {
             val aiCount = deals.count { it.aiAffinityScore != null }
             preferences.saveGeminiRunState(
-                statusSummary = "✨ Cache AI attiva (${settings.geminiModel}) · $aiCount offerte già valutate",
+                statusSummary = "✨ Cache AI attiva (${settings.geminiRerankModel}) · $aiCount offerte già valutate",
                 signature = signature
             )
             return deals
@@ -143,7 +146,7 @@ class DealsRepository(
             apiKey = settings.geminiApiKey,
             likedGames = settings.likedGames,
             candidates = aiTargets,
-            modelId = settings.geminiModel,
+            modelId = settings.geminiRerankModel,
             userTastePrompt = settings.userTastePrompt
         )
         preferences.saveGeminiRunState(
@@ -171,10 +174,23 @@ class DealsRepository(
 
     suspend fun testGeminiKey(): Result<String> {
         val settings = preferences.getSettings()
-        return geminiReranker.testKey(
+        val testRes = geminiReranker.testKey(
             apiKey = settings.geminiApiKey,
-            modelId = settings.geminiModel
+            modelId = settings.geminiRerankModel
         )
+        if (testRes.isSuccess) {
+            refreshAvailableGeminiModels()
+        }
+        return testRes
+    }
+
+    suspend fun refreshAvailableGeminiModels(): Result<List<GeminiModelInfo>> {
+        val settings = preferences.getSettings()
+        val result = modelsClient.fetchAvailableModels(settings.geminiApiKey)
+        result.onSuccess { models ->
+            preferences.saveAvailableGeminiModels(models)
+        }
+        return result
     }
 
     suspend fun getOrFetchGameInsights(deal: Deal, forceRefresh: Boolean = false): GameExternalInsights {
@@ -196,7 +212,7 @@ class DealsRepository(
         val fetched = insightsClient.fetchInsights(
             deal = deal,
             geminiApiKey = settings.geminiApiKey,
-            geminiModel = settings.geminiModel,
+            geminiModel = settings.geminiInsightsModel,
             likedGames = settings.likedGames,
             userTastePrompt = settings.userTastePrompt
         )
@@ -219,7 +235,7 @@ class DealsRepository(
         val result = soulClient.generateGamerSoul(
             apiKey = settings.geminiApiKey,
             likedGames = settings.likedGames,
-            modelId = settings.geminiModel,
+            modelId = settings.geminiSoulModel,
             userTastePrompt = settings.userTastePrompt
         )
         result.onSuccess { profile ->
@@ -231,7 +247,7 @@ class DealsRepository(
     suspend fun discoverGamesForSoul(freshBatch: Boolean = false): Result<List<AiDiscoveryPick>> {
         val settings = preferences.getSettings()
         val expectedSig = soulClient.computeSignature(
-            modelId = settings.geminiModel,
+            modelId = settings.geminiSoulModel,
             likedGames = settings.likedGames,
             userTastePrompt = settings.userTastePrompt
         )
@@ -249,7 +265,7 @@ class DealsRepository(
             apiKey = settings.geminiApiKey,
             soulProfile = soulProfile,
             likedGames = settings.likedGames,
-            modelId = settings.geminiModel,
+            modelId = settings.geminiSoulModel,
             userTastePrompt = settings.userTastePrompt,
             excludePreviousTitles = previousTitles
         )
