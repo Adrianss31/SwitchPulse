@@ -176,6 +176,10 @@ object DealTitleNormalizer {
     private val SWITCH_EDITION = Regex("\\s*nintendo switch.*edition.*$", RegexOption.IGNORE_CASE)
     private val NON_ALNUM = Regex("[^a-z0-9 ]+")
     private val MULTI_SPACE = Regex("\\s+")
+    private val EDITION_WORDS = Regex(
+        "\\b(?:definitive|deluxe|complete|ultimate|collectors?|goty|remastered|remake|anniversary|enhanced|expanded|royal|directors?\\s*cut|edition|hd|collection|voidheart|gold|digital)\\b",
+        RegexOption.IGNORE_CASE
+    )
     private val STEAM_EXCLUDED_WORDS = Regex("\\b(?:soundtrack|ost|artbook|demo)\\b", RegexOption.IGNORE_CASE)
 
     fun normalize(title: String): String {
@@ -187,6 +191,37 @@ object DealTitleNormalizer {
             .replace(MULTI_SPACE, " ")
             .trim()
         return cleaned.ifEmpty { title.lowercase().trim() }
+    }
+
+    /**
+     * Edition-agnostic normalized key for matching library/owned/rated titles against
+     * recommendations (e.g. "Hollow Knight: Voidheart Edition" <-> "Hollow Knight"), without
+     * merging distinct sequels such as "Hades" vs "Hades II".
+     */
+    fun canonicalKey(title: String): String {
+        val norm = normalize(title)
+        val cleaned = EDITION_WORDS.replace(norm, " ")
+            .replace(Regex("\\bii\\b"), "2")
+            .replace(Regex("\\biii\\b"), "3")
+            .replace(Regex("\\biv\\b"), "4")
+            .replace(MULTI_SPACE, " ")
+            .trim()
+        return cleaned.ifEmpty { norm }
+    }
+
+    fun matchesLibraryGame(
+        candidateTitle: String,
+        candidateEshopId: String?,
+        likedGames: List<LikedGame>
+    ): Boolean {
+        val candNorm = normalize(candidateTitle)
+        val candCanonical = canonicalKey(candidateTitle)
+        val cleanId = candidateEshopId?.trim()?.takeIf { it.isNotEmpty() }
+        return likedGames.any { owned ->
+            (cleanId != null && owned.id == cleanId) ||
+                normalize(owned.title) == candNorm ||
+                canonicalKey(owned.title) == candCanonical
+        }
     }
 
     fun isSteamSupplementaryItem(rawName: String): Boolean =

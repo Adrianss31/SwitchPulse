@@ -65,6 +65,7 @@ data class MainUiState(
     val isLoadingModels: Boolean = false,
     val isGeneratingSoul: Boolean = false,
     val isDiscoveringGames: Boolean = false,
+    val discoveryError: String? = null,
     val showDiscoverySheet: Boolean = false,
     val skippedAiDealIds: Set<String> = emptySet()
 )
@@ -87,6 +88,7 @@ private data class TransientUiState(
     val isLoadingModels: Boolean = false,
     val isGeneratingSoul: Boolean = false,
     val isDiscoveringGames: Boolean = false,
+    val discoveryError: String? = null,
     val showDiscoverySheet: Boolean = false,
     val skippedAiDealIds: Set<String> = emptySet()
 )
@@ -165,6 +167,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             isLoadingModels = transient.isLoadingModels,
             isGeneratingSoul = transient.isGeneratingSoul,
             isDiscoveringGames = transient.isDiscoveringGames,
+            discoveryError = transient.discoveryError,
             showDiscoverySheet = transient.showDiscoverySheet,
             skippedAiDealIds = skippedAiIds
         )
@@ -454,13 +457,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun discoverGamesForSoul(freshBatch: Boolean = false) {
         if (transientState.value.isDiscoveringGames) return
         viewModelScope.launch {
-            transientState.update { it.copy(showDiscoverySheet = true, isDiscoveringGames = true) }
+            transientState.update {
+                it.copy(showDiscoverySheet = true, isDiscoveringGames = true, discoveryError = null)
+            }
             val result = repository.discoverGamesForSoul(freshBatch = freshBatch)
             val errMsg = result.exceptionOrNull()?.message
+            val picksCount = result.getOrNull()?.size ?: 0
             transientState.update {
                 it.copy(
                     isDiscoveringGames = false,
-                    statusMessage = errMsg?.let { msg -> "⚠️ $msg" } ?: it.statusMessage
+                    discoveryError = errMsg,
+                    statusMessage = if (errMsg != null) "⚠️ $errMsg"
+                    else "✨ Trovati $picksCount nuovi giochi da scoprire"
                 )
             }
         }

@@ -550,6 +550,29 @@ class PreferencesStore(
         }
     }
 
+    suspend fun getDiscoveryHistory(): List<String> {
+        val raw = context.dataStore.data.first()[KEY_DISCOVERY_HISTORY_JSON].orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return runCatching { json.decodeFromString<List<String>>(raw) }.getOrDefault(emptyList())
+    }
+
+    suspend fun appendDiscoveryHistory(titles: List<String>, maxKeep: Int = 36) {
+        val cleanNew = titles.map { it.trim() }.filter { it.isNotEmpty() }
+        if (cleanNew.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val current = prefs[KEY_DISCOVERY_HISTORY_JSON]?.takeIf { it.isNotBlank() }?.let { raw ->
+                runCatching { json.decodeFromString<List<String>>(raw) }.getOrDefault(emptyList())
+            }.orEmpty()
+            val seen = HashSet<String>()
+            val merged = (cleanNew + current).filter { seen.add(DealTitleNormalizer.normalize(it)) }.take(maxKeep)
+            prefs[KEY_DISCOVERY_HISTORY_JSON] = json.encodeToString(merged)
+        }
+    }
+
+    suspend fun clearDiscoveryHistory() {
+        context.dataStore.edit { it.remove(KEY_DISCOVERY_HISTORY_JSON) }
+    }
+
     suspend fun dismissDiscoveryPick(title: String) {
         val clean = title.trim()
         if (clean.isBlank()) return
@@ -684,6 +707,7 @@ class PreferencesStore(
         private val KEY_USER_TASTE_PROMPT = stringPreferencesKey("user_taste_prompt")
         private val KEY_GAMER_SOUL_JSON = stringPreferencesKey("gamer_soul_json")
         private val KEY_AI_DISCOVERY_JSON = stringPreferencesKey("ai_discovery_json")
+        private val KEY_DISCOVERY_HISTORY_JSON = stringPreferencesKey("discovery_history_json")
         private val KEY_DISMISSED_DISCOVERY_JSON = stringPreferencesKey("dismissed_discovery_json")
         private val KEY_INSIGHTS_CACHE_JSON = stringPreferencesKey("insights_cache_json")
         private val KEY_GROUNDING_BLOCKED_JSON = stringPreferencesKey("grounding_blocked_json")

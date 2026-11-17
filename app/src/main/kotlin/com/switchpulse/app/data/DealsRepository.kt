@@ -616,7 +616,7 @@ class DealsRepository(
 
     suspend fun generateGamerSoul(): Result<GamerSoulProfile> {
         val settings = preferences.getSettings()
-        val soulTask = settings.soulTarget
+        val soulTask = resolveTaskTarget(settings, settings.soulTarget, forSoul = true)
         val result = soulClient.generateGamerSoul(
             apiKey = settings.apiKeyFor(soulTask.provider),
             likedGames = settings.likedGames,
@@ -630,25 +630,20 @@ class DealsRepository(
         return result
     }
 
+    /**
+     * Generates fresh game discovery recommendations outside the eShop sale feed.
+     * NEVER auto-regenerates [FilterSettings.gamerSoulProfile]: the player's soul is strictly
+     * updated only when the user manually refreshes it.
+     */
     suspend fun discoverGamesForSoul(freshBatch: Boolean = false): Result<List<AiDiscoveryPick>> {
         val settings = preferences.getSettings()
-        val soulTask = settings.soulTarget
-        val expectedSig = soulClient.computeSignature(
-            modelId = soulTask.modelId,
-            likedGames = settings.likedGames,
-            userTastePrompt = settings.userTastePrompt,
-            provider = soulTask.provider
-        )
-        val soulProfile = if (settings.gamerSoulProfile != null &&
-            settings.gamerSoulProfile.signature == expectedSig
-        ) {
-            settings.gamerSoulProfile
-        } else {
-            val generated = generateGamerSoul()
-            generated.getOrElse { return Result.failure(it) }
-        }
+        val soulTask = resolveTaskTarget(settings, settings.soulTarget, forSoul = true)
+        val soulProfile = settings.gamerSoulProfile
 
-        val previousTitles = if (freshBatch) settings.discoveryPicks.map { it.title } else emptyList()
+        val priorHistory = if (freshBatch) preferences.getDiscoveryHistory() else emptyList()
+        val currentTitles = settings.discoveryPicks.map { it.title }
+        val previousTitles = (currentTitles + priorHistory).distinct().take(36)
+
         val picksResult = soulClient.discoverGamesForSoul(
             apiKey = settings.apiKeyFor(soulTask.provider),
             soulProfile = soulProfile,
@@ -656,13 +651,38 @@ class DealsRepository(
             modelId = soulTask.modelId,
             userTastePrompt = settings.userTastePrompt,
             excludePreviousTitles = previousTitles,
+            desiredCount = 8,
             provider = soulTask.provider,
             dismissedTitles = settings.dismissedDiscoveryTitles
         )
         val rawPicks = picksResult.getOrElse { return Result.failure(it) }
         val enriched = runCatching { eshopClient.enrichDiscoveryPicks(rawPicks) }.getOrDefault(rawPicks)
-        preferences.saveDiscoveryPicks(enriched)
-        return Result.success(enriched)
+        val dismissedKeys = settings.dismissedDiscoveryTitles.flatMap {
+            listOf(DealTitleNormalizer.normalize(it), DealTitleNormalizer.canonicalKey(it))
+        }.toSet()
+        val finalPicks = enriched.filterNot { pick ->
+            DealTitleNormalizer.matchesLibraryGame(pick.title, pick.eshopId, settings.likedGames) ||
+                DealTitleNormalizer.normalize(pick.title) in dismissedKeys ||
+                DealTitleNormalizer.canonicalKey(pick.title) in dismissedKeys
+        }.ifEmpty {
+            return Result.failure(IllegalStateException("Tutti i titoli proposti sono già presenti nella tua libreria."))
+        }
+        preferences.saveDiscoveryPicks(finalPicks)
+        preferences.appendDiscoveryHistory(finalPicks.map { it.title })
+        return Result.success(finalPicks)
+    }
+
+    private fun resolveTaskTarget(
+        settings: FilterSettings,
+        preferred: com.switchpulse.app.data.model.AiTaskTarget,
+        forSoul: Boolean
+    ): com.switchpulse.app.data.model.AiTaskTarget {
+        if (settings.hasKeyFor(preferred.provider)) return preferred
+        val fallbackProvider = settings.configuredProviders().firstOrNull() ?: return preferred
+        return com.switchpulse.app.data.model.AiTaskTarget(
+            provider = fallbackProvider,
+            modelId = GeminiModels.defaultModelFor(fallbackProvider, forSoul = forSoul)
+        )
     }
 
     suspend fun notifyWidgetChanged() {

@@ -106,6 +106,7 @@
     <!-- Per te -->
     <string name="for_you_title">Per te</string>
     <string name="for_you_soul_section">La tua anima da giocatore</string>
+    <string name="for_you_soul_generate">Genera anima</string>
     <string name="for_you_seek">Cerchi</string>
     <string name="for_you_avoid">Eviti</string>
     <string name="for_you_your_words">Le tue parole</string>
@@ -113,7 +114,8 @@
     <string name="for_you_edit">Modifica</string>
     <string name="for_you_discover_title">Da scoprire</string>
     <string name="for_you_discover_subtitle">Giochi fuori dalla classifica, anche a prezzo pieno.</string>
-    <string name="for_you_discover_more">Altri 7 consigli</string>
+    <string name="for_you_discover_more">Nuovi consigli</string>
+    <string name="for_you_discover_loading">Ricerca…</string>
     <string name="for_you_no_ai_title">Scopri che giocatore sei</string>
     <string name="for_you_no_ai_body">Collega un servizio AI per avere la tua anima da giocatore, i consigli fuori dalle offerte e un punteggio per ogni gioco. Gemini ha un piano gratuito.</string>
     <string name="for_you_no_ai_cta">Collega un servizio AI</string>

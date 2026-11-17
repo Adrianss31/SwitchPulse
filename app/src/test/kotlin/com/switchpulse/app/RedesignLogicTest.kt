@@ -4,6 +4,7 @@ import com.switchpulse.app.data.DealFilterEngine
 import com.switchpulse.app.data.local.CoverBitmapCache
 import com.switchpulse.app.data.model.AiDiscoveryPick
 import com.switchpulse.app.data.model.Deal
+import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.FeedSortMode
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameDetailModel
@@ -164,5 +165,22 @@ class RedesignLogicTest {
 
         assertTrue("W1 payload too large: $w1TotalBytes", w1TotalBytes < 300_000)
         assertTrue("W12 payload too large: $w12TotalBytes", w12TotalBytes < 300_000)
+    }
+
+    @Test
+    fun `matchesLibraryGame catches edition variants without conflating distinct sequels`() {
+        val library = listOf(
+            LikedGame(id = "hk-1", title = "Hollow Knight", rating = 5, isOwned = true),
+            LikedGame(id = "hades-1", title = "Hades", isOwned = true),
+            LikedGame(id = "bayo-2", title = "Bayonetta 2", rating = 4, isOwned = false)
+        )
+
+        assertTrue(DealTitleNormalizer.matchesLibraryGame("Hollow Knight: Voidheart Edition", null, library))
+        assertTrue(DealTitleNormalizer.matchesLibraryGame("Bayonetta™ II", null, library))
+        assertTrue(DealTitleNormalizer.matchesLibraryGame("Some Edition Name", "hk-1", library))
+
+        // Distinct sequels must remain discoverable
+        assertTrue(!DealTitleNormalizer.matchesLibraryGame("Hollow Knight: Silksong", null, library))
+        assertTrue(!DealTitleNormalizer.matchesLibraryGame("Hades II", null, library))
     }
 }

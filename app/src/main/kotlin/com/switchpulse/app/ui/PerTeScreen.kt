@@ -1,15 +1,12 @@
 package com.switchpulse.app.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -35,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -70,7 +68,9 @@ import com.switchpulse.app.data.DealFilterEngine
 import com.switchpulse.app.data.model.AiDiscoveryPick
 import com.switchpulse.app.data.model.DealTitleNormalizer
 import com.switchpulse.app.data.model.GamerSoulProfile
+import com.switchpulse.app.ui.components.ActionBanner
 import com.switchpulse.app.ui.components.Cover
+import com.switchpulse.app.ui.components.EditorialIndeterminateBar
 import com.switchpulse.app.ui.components.EmptyState
 import com.switchpulse.app.ui.components.PrimaryButton
 import com.switchpulse.app.ui.components.SecondaryButton
@@ -84,6 +84,9 @@ import com.switchpulse.app.ui.theme.SpType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+private var lastAnimatedSoulGenMs: Long? = null
+private var lastDiscoveryTitleSet: Set<String>? = null
 
 @OptIn(ExperimentalSharedTransitionApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -101,6 +104,7 @@ fun PerTeScreen(
     scrollState: ScrollState = rememberScrollState()
 ) {
     val c = SpTheme.colors
+    val reduceMotion = LocalReduceMotion.current
     var showEditWordsSheet by remember { mutableStateOf(false) }
 
     val hasAnyKey = state.settings.hasAnyAiKey()
@@ -137,7 +141,7 @@ fun PerTeScreen(
 
         Spacer(modifier = Modifier.height(18.dp))
 
-        // 1. Gamer Soul section
+        // 1. Gamer Soul section (strictly manual generation / refresh only)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -152,16 +156,25 @@ fun PerTeScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Refresh,
-                    contentDescription = null,
-                    tint = if (hasSignals) c.ink else c.muted,
-                    modifier = Modifier.size(15.dp)
-                )
+                if (state.isGeneratingSoul) {
+                    CircularProgressIndicator(
+                        color = c.ink,
+                        strokeWidth = 1.8.dp,
+                        modifier = Modifier.size(13.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = null,
+                        tint = if (hasSignals) c.ink else c.muted,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
                 Text(
-                    text = stringResource(R.string.action_refresh),
+                    text = if (state.isGeneratingSoul) stringResource(R.string.for_you_discover_loading)
+                    else stringResource(R.string.action_refresh),
                     style = SpType.captionBold.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
-                    color = if (hasSignals) c.ink else c.muted
+                    color = if (hasSignals && !state.isGeneratingSoul) c.ink else c.muted
                 )
             }
         }
@@ -188,11 +201,12 @@ fun PerTeScreen(
                 )
             }
             soul == null -> {
+                lastAnimatedSoulGenMs = 0L
                 Spacer(modifier = Modifier.height(10.dp))
                 EmptyState(
                     title = stringResource(R.string.for_you_soul_section),
-                    body = "Genera il tuo profilo giocatore a partire dai titoli votati e dalle tue parole.",
-                    actionLabel = stringResource(R.string.action_refresh),
+                    body = "Genera manualmente il tuo profilo giocatore a partire dai titoli votati e dalle tue parole.",
+                    actionLabel = stringResource(R.string.for_you_soul_generate),
                     onAction = onGenerateSoul,
                     centered = false,
                     modifier = Modifier.background(c.bannerBg)
@@ -250,7 +264,37 @@ fun PerTeScreen(
         HorizontalDivider(thickness = 1.dp, color = c.line)
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 3. "Da scoprire" 2-column grid
+        // 3. "Da scoprire" 2-column grid (excludes rated, owned, library & dismissed titles live)
+        val visiblePicks = remember(
+            state.settings.discoveryPicks,
+            state.settings.dismissedDiscoveryTitles,
+            state.settings.likedGames
+        ) {
+            val dismissedKeys = state.settings.dismissedDiscoveryTitles.flatMap {
+                listOf(DealTitleNormalizer.normalize(it), DealTitleNormalizer.canonicalKey(it))
+            }.toSet()
+            state.settings.discoveryPicks.filterNot { pick ->
+                DealTitleNormalizer.normalize(pick.title) in dismissedKeys ||
+                    DealTitleNormalizer.canonicalKey(pick.title) in dismissedKeys ||
+                    DealTitleNormalizer.matchesLibraryGame(pick.title, pick.eshopId, state.settings.likedGames)
+            }
+        }
+
+        val currentTitleSet = remember(visiblePicks) {
+            visiblePicks.map { DealTitleNormalizer.canonicalKey(it.title) }.toSet()
+        }
+        val animateNewBatch = remember(currentTitleSet) {
+            val prev = lastDiscoveryTitleSet
+            val hasNewTitles = prev != null && currentTitleSet.any { it !in prev }
+            lastDiscoveryTitleSet = currentTitleSet
+            !reduceMotion && hasNewTitles && visiblePicks.isNotEmpty()
+        }
+        val gridDimAlpha by animateFloatAsState(
+            targetValue = if (state.isDiscoveringGames && visiblePicks.isNotEmpty()) 0.45f else 1f,
+            animationSpec = Motion.quick(),
+            label = "discovery_dim_alpha"
+        )
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -261,17 +305,36 @@ fun PerTeScreen(
                 style = SpType.cardTitle,
                 color = c.ink
             )
-            Box(
+            Row(
                 modifier = Modifier
                     .height(36.dp)
-                    .clickable(enabled = !state.isDiscoveringGames, onClick = onRefreshDiscoveryPicks)
+                    .clickable(
+                        enabled = !state.isDiscoveringGames && hasSignals,
+                        onClick = onRefreshDiscoveryPicks
+                    )
                     .padding(horizontal = 4.dp),
-                contentAlignment = Alignment.Center
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
+                if (state.isDiscoveringGames) {
+                    CircularProgressIndicator(
+                        color = c.ink,
+                        strokeWidth = 1.8.dp,
+                        modifier = Modifier.size(13.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = null,
+                        tint = if (hasSignals) c.ink else c.muted,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
                 Text(
-                    text = stringResource(R.string.for_you_discover_more),
+                    text = if (state.isDiscoveringGames) stringResource(R.string.for_you_discover_loading)
+                    else stringResource(R.string.for_you_discover_more),
                     style = SpType.captionBold.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
-                    color = if (state.isDiscoveringGames) c.muted else c.ink
+                    color = if (!state.isDiscoveringGames && hasSignals) c.ink else c.muted
                 )
             }
         }
@@ -281,42 +344,59 @@ fun PerTeScreen(
             color = c.muted
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        val visiblePicks = remember(state.settings.discoveryPicks, state.settings.dismissedDiscoveryTitles) {
-            val dismissedNorm = state.settings.dismissedDiscoveryTitles.map { DealTitleNormalizer.normalize(it) }.toSet()
-            state.settings.discoveryPicks.filter { DealTitleNormalizer.normalize(it.title) !in dismissedNorm }
+        if (state.isDiscoveringGames) {
+            Spacer(modifier = Modifier.height(10.dp))
+            EditorialIndeterminateBar()
         }
 
-        if (state.isDiscoveringGames && visiblePicks.isEmpty()) {
-            DiscoverySkeletonGrid()
-        } else if (visiblePicks.isEmpty()) {
-            PrimaryButton(
-                text = stringResource(R.string.for_you_discover_more),
-                onClick = onRefreshDiscoveryPicks,
-                enabled = hasSignals,
-                height = 48.dp
+        val discoveryError = state.discoveryError
+        if (!discoveryError.isNullOrBlank() && !state.isDiscoveringGames) {
+            Spacer(modifier = Modifier.height(10.dp))
+            ActionBanner(
+                text = discoveryError,
+                actionLabel = stringResource(R.string.action_retry),
+                onAction = onRefreshDiscoveryPicks,
+                modifier = Modifier.clip(RoundedCornerShape(4.dp))
             )
-        } else {
-            val rows = visiblePicks.chunked(2)
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                rows.forEachIndexed { rowIdx, pair ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        pair.forEachIndexed { colIdx, pick ->
-                            DiscoveryGridCard(
-                                pick = pick,
-                                indexInGrid = rowIdx * 2 + colIdx,
-                                sharedTransitionScope = sharedTransitionScope,
-                                animatedVisibilityScope = animatedVisibilityScope,
-                                onClick = { onOpenDiscoveryDetail(pick) },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        if (pair.size == 1) {
-                            Spacer(modifier = Modifier.weight(1f))
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Box(modifier = Modifier.fillMaxWidth().animateContentSize(Motion.standard(reduceMotion))) {
+            if (state.isDiscoveringGames && visiblePicks.isEmpty()) {
+                DiscoverySkeletonGrid()
+            } else if (visiblePicks.isEmpty()) {
+                PrimaryButton(
+                    text = stringResource(R.string.for_you_discover_more),
+                    onClick = onRefreshDiscoveryPicks,
+                    enabled = hasSignals && !state.isDiscoveringGames,
+                    height = 48.dp
+                )
+            } else {
+                val rows = visiblePicks.chunked(2)
+                Column(
+                    modifier = Modifier.graphicsLayer { alpha = gridDimAlpha },
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    rows.forEachIndexed { rowIdx, pair ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            pair.forEachIndexed { colIdx, pick ->
+                                DiscoveryGridCard(
+                                    pick = pick,
+                                    indexInGrid = rowIdx * 2 + colIdx,
+                                    animateEntrance = animateNewBatch,
+                                    sharedTransitionScope = sharedTransitionScope,
+                                    animatedVisibilityScope = animatedVisibilityScope,
+                                    onClick = { onOpenDiscoveryDetail(pick) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (pair.size == 1) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
                         }
                     }
                 }
@@ -345,103 +425,86 @@ private fun SoulProfileBlock(soul: GamerSoulProfile) {
     val words = remember(soul.archetypeTitle) {
         soul.archetypeTitle.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
     }
-    var visibleWords by remember(soul.archetypeTitle, reduceMotion) {
-        mutableIntStateOf(if (reduceMotion) words.size else 0)
+    // Always measure and display full height immediately on screen open / tab switch / Detail return
+    // so content below never slams downward. Animate alpha in-place only on fresh manual regeneration.
+    val shouldAnimateReveal = remember(soul.generatedAtMs) {
+        val prev = lastAnimatedSoulGenMs
+        val isFreshManual = !reduceMotion && prev != null && prev != soul.generatedAtMs && soul.generatedAtMs > 0L
+        lastAnimatedSoulGenMs = soul.generatedAtMs
+        isFreshManual
     }
-    var summaryVisible by remember(soul.archetypeTitle, reduceMotion) {
-        mutableStateOf(reduceMotion)
+    val revealAlpha = remember(soul.generatedAtMs) {
+        Animatable(if (shouldAnimateReveal) 0f else 1f)
     }
 
-    LaunchedEffect(soul.archetypeTitle, reduceMotion) {
-        if (!reduceMotion && words.isNotEmpty()) {
-            visibleWords = 0
-            summaryVisible = false
-            for (i in 1..words.size) {
-                delay(60L)
-                visibleWords = i
-            }
-            delay(80L)
-            summaryVisible = true
+    LaunchedEffect(soul.generatedAtMs, shouldAnimateReveal) {
+        if (shouldAnimateReveal) {
+            revealAlpha.animateTo(1f, tween(280, easing = Motion.Out))
             view.hapticConfirm()
-        } else {
-            visibleWords = words.size
-            summaryVisible = true
         }
     }
 
-    Spacer(modifier = Modifier.height(6.dp))
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(7.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        words.forEachIndexed { idx, word ->
-            val shown = idx < visibleWords
-            val dy = if (shown || reduceMotion) 0f else 6f
-            val alpha = if (shown) 1f else 0f
-            Text(
-                text = word,
-                style = SpType.sheetTitle.copy(
-                    fontFamily = com.switchpulse.app.ui.theme.BricolageSemi,
-                    fontSize = 32.sp,
-                    lineHeight = 34.sp
-                ),
-                color = c.accent,
-                modifier = Modifier.graphicsLayer {
-                    translationY = dy
-                    this.alpha = alpha
-                }
-            )
-        }
-    }
-
-    AnimatedVisibility(
-        visible = summaryVisible,
-        enter = fadeIn(Motion.standard(reduceMotion))
-    ) {
-        Column {
-            if (soul.soulSummary.isNotBlank()) {
-                Spacer(modifier = Modifier.height(10.dp))
+    Column(modifier = Modifier.graphicsLayer { alpha = revealAlpha.value }) {
+        Spacer(modifier = Modifier.height(6.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            words.forEach { word ->
                 Text(
-                    text = soul.soulSummary,
-                    style = SpType.body.copy(lineHeight = 21.sp),
-                    color = c.ink2
+                    text = word,
+                    style = SpType.sheetTitle.copy(
+                        fontFamily = com.switchpulse.app.ui.theme.BricolageSemi,
+                        fontSize = 32.sp,
+                        lineHeight = 34.sp
+                    ),
+                    color = c.accent
                 )
             }
-            if (soul.corePillars.isNotEmpty() || soul.redFlags.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(14.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
+        }
+
+        if (soul.soulSummary.isNotBlank()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = soul.soulSummary,
+                style = SpType.body.copy(lineHeight = 21.sp),
+                color = c.ink2
+            )
+        }
+        if (soul.corePillars.isNotEmpty() || soul.redFlags.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(14.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.for_you_seek),
+                        style = SpType.captionBold.copy(fontSize = 13.sp),
+                        color = c.ink
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    soul.corePillars.take(4).forEach { pillar ->
                         Text(
-                            text = stringResource(R.string.for_you_seek),
-                            style = SpType.captionBold.copy(fontSize = 13.sp),
-                            color = c.ink
+                            text = "• $pillar",
+                            style = SpType.body.copy(fontSize = 13.sp, lineHeight = 20.sp),
+                            color = c.ink2
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        soul.corePillars.take(4).forEach { pillar ->
-                            Text(
-                                text = "• $pillar",
-                                style = SpType.body.copy(fontSize = 13.sp, lineHeight = 20.sp),
-                                color = c.ink2
-                            )
-                        }
                     }
-                    Column(modifier = Modifier.weight(1f)) {
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.for_you_avoid),
+                        style = SpType.captionBold.copy(fontSize = 13.sp),
+                        color = c.ink
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    soul.redFlags.take(4).forEach { avoid ->
                         Text(
-                            text = stringResource(R.string.for_you_avoid),
-                            style = SpType.captionBold.copy(fontSize = 13.sp),
-                            color = c.ink
+                            text = "• $avoid",
+                            style = SpType.body.copy(fontSize = 13.sp, lineHeight = 20.sp),
+                            color = c.ink2
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        soul.redFlags.take(4).forEach { avoid ->
-                            Text(
-                                text = "• $avoid",
-                                style = SpType.body.copy(fontSize = 13.sp, lineHeight = 20.sp),
-                                color = c.ink2
-                            )
-                        }
                     }
                 }
             }
@@ -454,6 +517,7 @@ private fun SoulProfileBlock(soul: GamerSoulProfile) {
 private fun DiscoveryGridCard(
     pick: AiDiscoveryPick,
     indexInGrid: Int,
+    animateEntrance: Boolean,
     sharedTransitionScope: SharedTransitionScope,
     animatedVisibilityScope: AnimatedVisibilityScope,
     onClick: () -> Unit,
@@ -462,13 +526,17 @@ private fun DiscoveryGridCard(
     val c = SpTheme.colors
     val reduceMotion = LocalReduceMotion.current
     val density = LocalDensity.current
-    val initialOffsetX = with(density) { 24.dp.toPx() }
-    val slideX = remember(pick.title) { Animatable(if (reduceMotion) 0f else initialOffsetX) }
-    val alphaAnim = remember(pick.title) { Animatable(if (reduceMotion) 1f else 0f) }
+    val initialOffsetX = with(density) { 20.dp.toPx() }
+    val slideX = remember(pick.title, animateEntrance) {
+        Animatable(if (animateEntrance && !reduceMotion) initialOffsetX else 0f)
+    }
+    val alphaAnim = remember(pick.title, animateEntrance) {
+        Animatable(if (animateEntrance && !reduceMotion) 0f else 1f)
+    }
 
-    LaunchedEffect(pick.title, reduceMotion) {
-        if (!reduceMotion) {
-            delay((indexInGrid.coerceAtMost(7) * 40L))
+    LaunchedEffect(pick.title, animateEntrance) {
+        if (animateEntrance && !reduceMotion) {
+            delay((indexInGrid.coerceAtMost(7) * 35L))
             launch { slideX.animateTo(0f, Motion.standard()) }
             launch { alphaAnim.animateTo(1f, Motion.standard()) }
         }

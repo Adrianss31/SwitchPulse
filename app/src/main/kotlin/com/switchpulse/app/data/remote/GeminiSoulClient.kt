@@ -110,12 +110,12 @@ class GeminiSoulClient(
 
     suspend fun discoverGamesForSoul(
         apiKey: String,
-        soulProfile: GamerSoulProfile,
+        soulProfile: GamerSoulProfile? = null,
         likedGames: List<LikedGame>,
         modelId: String = GeminiModels.HYDROGEN,
         userTastePrompt: String = "",
         excludePreviousTitles: List<String> = emptyList(),
-        desiredCount: Int = 7,
+        desiredCount: Int = 8,
         provider: AiProvider = AiProvider.GEMINI,
         dismissedTitles: List<String> = emptyList()
     ): Result<List<AiDiscoveryPick>> = withContext(Dispatchers.IO) {
@@ -123,6 +123,9 @@ class GeminiSoulClient(
         val effectiveModel = modelId.trim().ifBlank { GeminiModels.defaultModelFor(provider, forSoul = true) }
         if (cleanKey.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Inserisci prima la tua API key per ${provider.displayName} in Impostazioni."))
+        }
+        if (soulProfile == null && likedGames.isEmpty() && userTastePrompt.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Aggiungi o vota almeno un gioco in Libreria (o scrivi le preferenze IA)."))
         }
 
         val count = desiredCount.coerceIn(5, 10)
@@ -140,7 +143,7 @@ class GeminiSoulClient(
                 apiKey = cleanKey,
                 modelId = effectiveModel,
                 prompt = prompt,
-                temperature = 0.45,
+                temperature = if (combinedExcluded.isNotEmpty()) 0.85 else 0.5,
                 maxOutputTokens = 4096,
                 expectJsonObject = false,
                 enableGeminiGoogleSearch = false
@@ -159,16 +162,21 @@ class GeminiSoulClient(
             return@withContext Result.failure(IllegalStateException("Formato consigli AI non valido"))
         }
 
-        val dismissedNorms = dismissedTitles.map { DealTitleNormalizer.normalize(it) }.toSet()
-        val libraryNorms = likedGames.map { DealTitleNormalizer.normalize(it.title) }.toSet() + dismissedNorms
-        val previousNorms = excludePreviousTitles.map { DealTitleNormalizer.normalize(it) }.toSet()
+        val dismissedKeys = dismissedTitles.flatMap {
+            listOf(DealTitleNormalizer.normalize(it), DealTitleNormalizer.canonicalKey(it))
+        }.toSet()
+        val previousKeys = excludePreviousTitles.flatMap {
+            listOf(DealTitleNormalizer.normalize(it), DealTitleNormalizer.canonicalKey(it))
+        }.toSet()
 
-        val cleaned = parsedList
+        val eligible = parsedList
             .mapNotNull { dto ->
                 val title = dto.title.orEmpty().trim()
                 if (title.isBlank()) return@mapNotNull null
                 val norm = DealTitleNormalizer.normalize(title)
-                if (norm in libraryNorms) return@mapNotNull null
+                val canonical = DealTitleNormalizer.canonicalKey(title)
+                if (norm in dismissedKeys || canonical in dismissedKeys) return@mapNotNull null
+                if (DealTitleNormalizer.matchesLibraryGame(title, null, likedGames)) return@mapNotNull null
                 AiDiscoveryPick(
                     title = title,
                     pitchHook = dto.pitchHook.orEmpty().trim().take(72),
@@ -176,9 +184,17 @@ class GeminiSoulClient(
                     estimatedPriceHint = dto.estimatedPriceHint.orEmpty().trim().take(32)
                 )
             }
-            .distinctBy { DealTitleNormalizer.normalize(it.title) }
-            .sortedBy { DealTitleNormalizer.normalize(it.title) in previousNorms }
-            .take(10)
+            .distinctBy { DealTitleNormalizer.canonicalKey(it.title) }
+
+        val freshOnly = eligible.filterNot { pick ->
+            DealTitleNormalizer.normalize(pick.title) in previousKeys ||
+                DealTitleNormalizer.canonicalKey(pick.title) in previousKeys
+        }
+        val cleaned = if (freshOnly.size >= count || eligible.size == freshOnly.size) {
+            freshOnly.take(10)
+        } else {
+            (freshOnly + eligible.filterNot { it in freshOnly }).take(count)
+        }
 
         if (cleaned.isEmpty()) {
             Result.failure(IllegalStateException("Nessun titolo nuovo trovato fuori dalla tua libreria"))
@@ -211,7 +227,7 @@ class GeminiSoulClient(
     }
 
     private fun buildDiscoveryPrompt(
-        soulProfile: GamerSoulProfile,
+        soulProfile: GamerSoulProfile?,
         likedGames: List<LikedGame>,
         userTastePrompt: String,
         excludePreviousTitles: List<String>,
@@ -219,41 +235,50 @@ class GeminiSoulClient(
     ): String {
         val libraryTitles = if (likedGames.isEmpty()) "(nessuno)" else likedGames.joinToString(", ") { it.title }
         val prevBlock = if (excludePreviousTitles.isEmpty()) "" else {
-            "\nEVITA SE POSSIBILE ANCHE QUESTI TITOLI GIÀ PROPOSTI IN PRECEDENZA:\n${excludePreviousTitles.joinToString(", ")}\n"
+            "\nTITOLI GIÀ PROPOSTI IN PRECEDENZA — NON RIPETERLI PER NESSUN MOTIVO (scegli SOLO giochi diversi e freschi):\n${excludePreviousTitles.joinToString(", ")}\n"
         }
         val notesBlock = likedGames
-            .filter { !it.userNote.isNullOrBlank() || it.rating != null }
-            .take(15)
+            .filter { !it.userNote.isNullOrBlank() || it.rating != null || it.isOwned }
+            .take(25)
             .joinToString("\n") { g ->
-                val r = g.rating?.let { "${it}★" } ?: "Posseduto"
+                val r = g.rating?.let { "${it}★" } ?: if (g.isOwned) "Posseduto" else "Salvato"
+                val ownedSuffix = if (g.isOwned && g.rating != null) " · posseduto" else ""
                 val n = g.userNote?.trim()?.takeIf { it.isNotEmpty() }?.let { " — \"$it\"" }.orEmpty()
-                "- [$r] ${g.title}$n"
+                "- [$r$ownedSuffix] ${g.title}$n"
             }.ifBlank { "(nessuno)" }
 
-        return """
-            Sei un curatore videoludico esperto di Nintendo Switch e Nintendo Switch 2.
-            Sulla base dell'ANIMA DA VIDEOGIOCATORE già estratta per l'utente, consiglia esattamente $count videogiochi disponibili su Nintendo Switch / Switch 2 da provare.
-
-            REGOLE TASSATIVE:
-            1. I giochi NON devono essere necessariamente in sconto ora: puoi consigliare capolavori a prezzo pieno, gemme indie, cult o classici purché perfetti per questa anima.
-            2. DIVIETO ASSOLUTO di consigliare giochi già presenti in `GIÀ IN LIBRERIA` (controlla con precisione ogni titolo ed edizione).
-            3. Dai varietà ma resta fedelissimo allo spirito del profilo e alle note sui voti.
-
+        val soulSection = if (soulProfile != null) {
+            """
             ANIMA DEL GIOCATORE:
             Archetipo: ${soulProfile.archetypeTitle}
             Ritratto: ${soulProfile.soulSummary}
             Pilastri chiave: ${soulProfile.corePillars.joinToString(" | ")}
             Cosa evita: ${soulProfile.redFlags.joinToString(" | ")}
+            """.trimIndent()
+        } else {
+            "ANIMA DEL GIOCATORE: (non ancora generata — basati con precisione su voti, note e preferenze testuali)"
+        }
+
+        return """
+            Sei un curatore videoludico esperto di Nintendo Switch e Nintendo Switch 2.
+            Consiglia esattamente $count videogiochi disponibili su Nintendo Switch / Switch 2 da scoprire, perfettamente coerenti con il profilo dell'utente.
+
+            REGOLE TASSATIVE:
+            1. I giochi NON devono essere necessariamente in sconto ora: puoi consigliare capolavori a prezzo pieno, gemme indie, cult o classici perfetti per i suoi gusti.
+            2. DIVIETO ASSOLUTO di consigliare qualsiasi titolo già presente in `GIÀ IN LIBRERIA / GIÀ VOTATI / POSSEDUTI` (incluse edizioni speciali, deluxe o remastered dello stesso gioco).
+            3. Dai varietà reale ed evita qualsiasi titolo presente nella lista `TITOLI GIÀ PROPOSTI IN PRECEDENZA`.
+
+            $soulSection
             Preferenze testuali: ${userTastePrompt.ifBlank { "(nessuna)" }}
 
-            DETTAGLIO VOTI & COMMENTI:
+            DETTAGLIO VOTI, POSSEDUTI & COMMENTI:
             $notesBlock
 
-            GIÀ IN LIBRERIA (DA ESCLUDERE TASSATIVAMENTE):
+            GIÀ IN LIBRERIA / GIÀ VOTATI / POSSEDUTI (ESCLUSI TASSATIVAMENTE):
             $libraryTitles
             $prevBlock
             Rispondi ESCLUSIVAMENTE con un array JSON valido di $count elementi:
-            [{"title":"Nome esatto del gioco su Switch","pitchHook":"<gancio sintetico 4-7 parole>","reason":"<2 frasi in italiano: perché incarna esattamente la tua anima da giocatore e in cosa evita le tue red flag>","estimatedPriceHint":"<es. ~19,99 €>"}]
+            [{"title":"Nome esatto del gioco su Switch","pitchHook":"<gancio sintetico 4-7 parole>","reason":"<2 frasi in italiano: perché è perfetto per i tuoi gusti e cosa evita delle tue red flag>","estimatedPriceHint":"<es. ~19,99 €>"}]
         """.trimIndent()
     }
 
@@ -281,9 +306,19 @@ class GeminiSoulClient(
     }
 
     private fun extractJsonArray(text: String): String? {
-        val start = text.indexOf('[')
-        val end = text.lastIndexOf(']')
-        return if (start >= 0 && end > start) text.substring(start, end + 1) else null
+        val cleaned = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val ends = cleaned.indices.filter { cleaned[it] == ']' }.asReversed()
+        val starts = cleaned.indices.filter { cleaned[it] == '[' }
+        for (end in ends) {
+            for (start in starts) {
+                if (start >= end) continue
+                val slice = cleaned.substring(start, end + 1)
+                if (runCatching { json.decodeFromString<List<DiscoveryItemDto>>(slice) }.isSuccess) {
+                    return slice
+                }
+            }
+        }
+        return null
     }
 
     companion object {

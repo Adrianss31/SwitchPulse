@@ -165,4 +165,47 @@ class GeminiSoulClientTest {
         assertEquals("Nine Sols", picks.last().title)
         assertEquals("€28,99", picks.last().estimatedPriceHint)
     }
+
+    @Test
+    fun `discoverGamesForSoul works without existing gamerSoulProfile and strips edition duplicates and repeats`() = runBlocking {
+        val body = """
+            {
+              "candidates": [
+                {
+                  "content": {
+                    "parts": [
+                      {
+                        "text": "Ecco i titoli [Switch]:\n[{\"title\":\"Hollow Knight: Voidheart Edition\",\"pitchHook\":\"Edizione speciale posseduta\",\"reason\":\"Non dovrebbe mai comparire\",\"estimatedPriceHint\":\"€14,99\"},{\"title\":\"Celeste\",\"pitchHook\":\"Già votato 5 stelle\",\"reason\":\"Non dovrebbe comparire\"},{\"title\":\"Nine Sols\",\"pitchHook\":\"Già visto prima\",\"reason\":\"Ripetuto\"},{\"title\":\"Tunic\",\"pitchHook\":\"Segreti\",\"reason\":\"Fresco 1\"},{\"title\":\"Animal Well\",\"pitchHook\":\"Labirinto\",\"reason\":\"Fresco 2\"},{\"title\":\"Metroid Dread\",\"pitchHook\":\"Azione\",\"reason\":\"Fresco 3\"},{\"title\":\"Ori and the Blind Forest: Definitive Edition\",\"pitchHook\":\"Fresco 4\",\"reason\":\"Fresco 4\"},{\"title\":\"Death's Door\",\"pitchHook\":\"Fresco 5\",\"reason\":\"Fresco 5\"}]"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(body))
+
+        val client = GeminiSoulClient(
+            httpClient = OkHttpClient(),
+            endpointOverride = server.url("/v1beta/models/gemini-4-hydrogen:generateContent").toString()
+        )
+
+        val result = client.discoverGamesForSoul(
+            apiKey = "AIzaTestKey",
+            soulProfile = null,
+            likedGames = sampleLibrary(),
+            modelId = GeminiModels.HYDROGEN,
+            userTastePrompt = "Voglio indie precisi",
+            excludePreviousTitles = listOf("Nine Sols"),
+            desiredCount = 5
+        )
+
+        assertTrue("Expected success, got ${result.exceptionOrNull()}", result.isSuccess)
+        val picks = result.getOrThrow()
+        assertFalse(picks.any { it.title.contains("Hollow Knight", ignoreCase = true) })
+        assertFalse(picks.any { it.title.equals("Celeste", ignoreCase = true) })
+        // Since 5 fresh picks survived, previously suggested "Nine Sols" must not repeat at all.
+        assertFalse(picks.any { it.title.equals("Nine Sols", ignoreCase = true) })
+        assertEquals(5, picks.size)
+    }
 }
