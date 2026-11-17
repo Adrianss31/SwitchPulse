@@ -3,7 +3,6 @@ package com.switchpulse.app.widget
 import android.content.Context
 import android.graphics.Bitmap
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.ColorFilter
@@ -14,7 +13,6 @@ import androidx.glance.Image
 import androidx.glance.ImageProvider
 import androidx.glance.LocalSize
 import androidx.glance.action.clickable
-import androidx.glance.appwidget.CircularProgressIndicator
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.SizeMode
@@ -29,7 +27,6 @@ import androidx.glance.layout.Column
 import androidx.glance.layout.ContentScale
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
-import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
@@ -39,8 +36,6 @@ import androidx.glance.layout.width
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
-import androidx.work.WorkInfo
-import androidx.work.WorkManager
 import com.switchpulse.app.R
 import com.switchpulse.app.SwitchPulseApp
 import com.switchpulse.app.data.DealFilterEngine
@@ -51,44 +46,33 @@ import kotlinx.coroutines.withContext
 
 class TopCoverWidget : GlanceAppWidget() {
 
-    override val sizeMode: SizeMode = SizeMode.Responsive(
-        setOf(
-            DpSize(220.dp, 220.dp),
-            DpSize(240.dp, 280.dp),
-            DpSize(330.dp, 340.dp)
-        )
-    )
+    override val sizeMode: SizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val container = SwitchPulseApp.containerFrom(context)
         val snapshot = withContext(Dispatchers.IO) {
-            val settings = container.preferences.getSettings()
-            val rawDeals = container.preferences.getCachedDeals()
-            val topDeals = DealFilterEngine.filterTopTen(
-                rawDeals = rawDeals,
-                settings = settings,
-                platformOverride = settings.widgetPlatformFilter,
-                limit = 10
-            ).take(4)
+            runCatching {
+                val container = SwitchPulseApp.containerFrom(context)
+                val settings = container.preferences.getSettings()
+                val rawDeals = container.preferences.getCachedDeals()
+                val topDeals = DealFilterEngine.filterTopTen(
+                    rawDeals = rawDeals,
+                    settings = settings,
+                    platformOverride = settings.widgetPlatformFilter,
+                    limit = 10
+                ).take(4)
 
-            val bitmaps = topDeals.mapNotNull { deal ->
-                container.repository.coverCache
-                    .loadCachedBitmap(deal.id, CoverBitmapCache.Kind.HERO)
-                    ?.let { deal.id to it }
-            }.toMap()
+                val bitmaps = topDeals.mapIndexedNotNull { index, deal ->
+                    val kind = if (index == 0) CoverBitmapCache.Kind.HERO else CoverBitmapCache.Kind.THUMB
+                    container.repository.coverCache
+                        .loadCachedBitmap(deal.id, kind)
+                        ?.takeIf { !it.isRecycled && it.width > 0 && it.height > 0 }
+                        ?.let { deal.id to it }
+                }.toMap()
 
-            val refreshing = runCatching {
-                WorkManager.getInstance(context)
-                    .getWorkInfosForUniqueWork("switchpulse_periodic_sync")
-                    .get()
-                    .any { it.state == WorkInfo.State.RUNNING }
-            }.getOrDefault(false)
-
-            TopCoverSnapshot(
-                deals = topDeals,
-                bitmaps = bitmaps,
-                isRefreshing = refreshing
-            )
+                TopCoverSnapshot(deals = topDeals, bitmaps = bitmaps)
+            }.getOrElse {
+                TopCoverSnapshot(deals = emptyList(), bitmaps = emptyMap())
+            }
         }
 
         provideContent {
@@ -101,8 +85,7 @@ class TopCoverWidget : GlanceAppWidget() {
 
 private data class TopCoverSnapshot(
     val deals: List<Deal>,
-    val bitmaps: Map<String, Bitmap>,
-    val isRefreshing: Boolean
+    val bitmaps: Map<String, Bitmap>
 )
 
 @Composable
@@ -116,8 +99,8 @@ private fun TopCoverWidgetContent(
     }
 
     val widgetSize = LocalSize.current
-    val compactHeightOnlyHero = widgetSize.height < 260.dp || snapshot.deals.size == 1
-    val bottomColumnsCount = if (widgetSize.width < 250.dp) 2 else 3
+    val compactHeightOnlyHero = (widgetSize.height > 0.dp && widgetSize.height < 220.dp) || snapshot.deals.size == 1
+    val bottomColumnsCount = if (widgetSize.width > 0.dp && widgetSize.width < 245.dp) 2 else 3
     val hero = snapshot.deals.first()
     val secondary = snapshot.deals.drop(1).take(bottomColumnsCount)
 
@@ -138,7 +121,7 @@ private fun TopCoverWidgetContent(
                 .background(WidgetPalette.coverFallback)
                 .clickable(actionStartActivity(openDealDetailIntent(context, hero.id)))
         ) {
-            val heroBitmap = snapshot.bitmaps[hero.id]
+            val heroBitmap = snapshot.bitmaps[hero.id]?.takeIf { !it.isRecycled }
             if (heroBitmap != null) {
                 Image(
                     provider = ImageProvider(heroBitmap),
@@ -155,48 +138,45 @@ private fun TopCoverWidgetContent(
                 modifier = GlanceModifier.fillMaxSize()
             )
 
-            // Top bar inside cover: "Top 10 eShop" paper pill + Refresh button
-            Row(
+            Column(
                 modifier = GlanceModifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp, start = 12.dp, end = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .fillMaxSize()
+                    .padding(start = 12.dp, end = 8.dp, top = 12.dp, bottom = 12.dp)
             ) {
-                Box(
-                    modifier = GlanceModifier
-                        .height(26.dp)
-                        .cornerRadius(13.dp)
-                        .background(WidgetPalette.paper)
-                        .clickable(actionStartActivity(openAppIntent(context)))
-                        .padding(horizontal = 10.dp),
-                    contentAlignment = Alignment.Center
+                // Top bar inside cover: "Top 10 eShop" paper pill + Refresh button
+                Row(
+                    modifier = GlanceModifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = context.getString(R.string.widget_pill_top10),
-                        style = TextStyle(
-                            color = WidgetPalette.ink,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        ),
-                        maxLines = 1
-                    )
-                }
-
-                Spacer(modifier = GlanceModifier.defaultWeight())
-
-                Box(
-                    modifier = GlanceModifier
-                        .size(36.dp)
-                        .cornerRadius(18.dp)
-                        .clickable(actionRunCallback<RefreshDealsAction>()),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (snapshot.isRefreshing) {
-                        CircularProgressIndicator(
-                            color = WidgetPalette.white,
-                            modifier = GlanceModifier.size(18.dp)
+                    Box(
+                        modifier = GlanceModifier
+                            .height(26.dp)
+                            .cornerRadius(13.dp)
+                            .background(WidgetPalette.paper)
+                            .clickable(actionStartActivity(openAppIntent(context)))
+                            .padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = context.getString(R.string.widget_pill_top10),
+                            style = TextStyle(
+                                color = WidgetPalette.ink,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            maxLines = 1
                         )
-                    } else {
+                    }
+
+                    Spacer(modifier = GlanceModifier.defaultWeight())
+
+                    Box(
+                        modifier = GlanceModifier
+                            .size(36.dp)
+                            .cornerRadius(18.dp)
+                            .clickable(actionRunCallback<RefreshDealsAction>()),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Image(
                             provider = ImageProvider(R.drawable.ic_refresh),
                             contentDescription = context.getString(R.string.action_refresh),
@@ -205,76 +185,78 @@ private fun TopCoverWidgetContent(
                         )
                     }
                 }
-            }
 
-            // Bottom overlay: "01" + Title + Expiry + Price & −XX% badge
-            Row(
-                modifier = GlanceModifier
-                    .fillMaxSize()
-                    .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                Text(
-                    text = "01",
-                    style = TextStyle(
-                        color = WidgetPalette.white,
-                        fontSize = 52.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                )
-                Spacer(modifier = GlanceModifier.width(10.dp))
-                Column(modifier = GlanceModifier.defaultWeight()) {
+                Spacer(modifier = GlanceModifier.defaultWeight())
+
+                // Bottom overlay: "01" + Title + Expiry + Price & −XX% badge
+                Row(
+                    modifier = GlanceModifier
+                        .fillMaxWidth()
+                        .padding(start = 2.dp, end = 6.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
                     Text(
-                        text = hero.title,
+                        text = "01",
                         style = TextStyle(
                             color = WidgetPalette.white,
-                            fontSize = 15.sp,
+                            fontSize = 48.sp,
                             fontWeight = FontWeight.Bold
-                        ),
-                        maxLines = 1
+                        )
                     )
-                    val expiry = DealFilterEngine.formatExpiryShort(hero.endsAtIso)
-                    if (!expiry.isNullOrBlank()) {
-                        Spacer(modifier = GlanceModifier.height(2.dp))
+                    Spacer(modifier = GlanceModifier.width(10.dp))
+                    Column(modifier = GlanceModifier.defaultWeight()) {
                         Text(
-                            text = expiry,
+                            text = hero.title,
                             style = TextStyle(
-                                color = WidgetPalette.heroExpiryTint,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
+                                color = WidgetPalette.white,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
                             ),
                             maxLines = 1
                         )
-                    }
-                }
-                Spacer(modifier = GlanceModifier.width(8.dp))
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        text = DealFilterEngine.formatEur(hero.discountedPriceEur),
-                        style = TextStyle(
-                            color = WidgetPalette.white,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        ),
-                        maxLines = 1
-                    )
-                    if (hero.discountPercent > 0) {
-                        Spacer(modifier = GlanceModifier.height(2.dp))
-                        Box(
-                            modifier = GlanceModifier
-                                .cornerRadius(3.dp)
-                                .background(WidgetPalette.accent)
-                                .padding(horizontal = 5.dp, vertical = 1.dp)
-                        ) {
+                        val expiry = DealFilterEngine.formatExpiryShort(hero.endsAtIso)
+                        if (!expiry.isNullOrBlank()) {
+                            Spacer(modifier = GlanceModifier.height(2.dp))
                             Text(
-                                text = "−${hero.discountPercent}%",
+                                text = expiry,
                                 style = TextStyle(
-                                    color = WidgetPalette.white,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Bold
+                                    color = WidgetPalette.heroExpiryTint,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
                                 ),
                                 maxLines = 1
                             )
+                        }
+                    }
+                    Spacer(modifier = GlanceModifier.width(8.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = DealFilterEngine.formatEur(hero.discountedPriceEur),
+                            style = TextStyle(
+                                color = WidgetPalette.white,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            maxLines = 1
+                        )
+                        if (hero.discountPercent > 0) {
+                            Spacer(modifier = GlanceModifier.height(2.dp))
+                            Box(
+                                modifier = GlanceModifier
+                                    .cornerRadius(3.dp)
+                                    .background(WidgetPalette.accent)
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    text = "−${hero.discountPercent}%",
+                                    style = TextStyle(
+                                        color = WidgetPalette.white,
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
@@ -295,7 +277,7 @@ private fun TopCoverWidgetContent(
                         context = context,
                         rank = idx + 2,
                         deal = deal,
-                        bitmap = snapshot.bitmaps[deal.id],
+                        bitmap = snapshot.bitmaps[deal.id]?.takeIf { !it.isRecycled },
                         fallbackIndex = idx,
                         modifier = GlanceModifier.defaultWeight()
                     )

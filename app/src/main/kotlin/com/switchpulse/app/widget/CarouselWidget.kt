@@ -61,22 +61,36 @@ class CarouselWidget : GlanceAppWidget() {
     override val sizeMode: SizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val container = SwitchPulseApp.containerFrom(context)
         val snapshot = withContext(Dispatchers.IO) {
-            val settings = container.preferences.getSettings()
-            val rawDeals = container.preferences.getCachedDeals()
-            val topDeals = DealFilterEngine.filterTopTen(
-                rawDeals = rawDeals,
-                settings = settings,
-                platformOverride = settings.widgetPlatformFilter,
-                limit = 10
-            )
-            val bitmaps = topDeals.mapNotNull { deal ->
-                container.repository.coverCache
-                    .loadCachedBitmap(deal.id, CoverBitmapCache.Kind.TALL)
-                    ?.let { deal.id to it }
-            }.toMap()
-            CarouselSnapshot(deals = topDeals, bitmaps = bitmaps)
+            runCatching {
+                val container = SwitchPulseApp.containerFrom(context)
+                val settings = container.preferences.getSettings()
+                val rawDeals = container.preferences.getCachedDeals()
+                val topDeals = DealFilterEngine.filterTopTen(
+                    rawDeals = rawDeals,
+                    settings = settings,
+                    platformOverride = settings.widgetPlatformFilter,
+                    limit = 10
+                )
+                val cache = container.repository.coverCache
+                val mainBitmaps = topDeals.mapNotNull { deal ->
+                    cache.loadCachedBitmap(deal.id, CoverBitmapCache.Kind.TALL_MAIN)
+                        ?.takeIf { !it.isRecycled && it.width > 0 && it.height > 0 }
+                        ?.let { deal.id to it }
+                }.toMap()
+                val sideBitmaps = topDeals.mapNotNull { deal ->
+                    cache.loadCachedBitmap(deal.id, CoverBitmapCache.Kind.TALL_SIDE)
+                        ?.takeIf { !it.isRecycled && it.width > 0 && it.height > 0 }
+                        ?.let { deal.id to it }
+                }.toMap()
+                CarouselSnapshot(
+                    deals = topDeals,
+                    mainBitmaps = mainBitmaps,
+                    sideBitmaps = sideBitmaps
+                )
+            }.getOrElse {
+                CarouselSnapshot(deals = emptyList(), mainBitmaps = emptyMap(), sideBitmaps = emptyMap())
+            }
         }
 
         provideContent {
@@ -99,7 +113,8 @@ class CarouselWidget : GlanceAppWidget() {
 
 private data class CarouselSnapshot(
     val deals: List<Deal>,
-    val bitmaps: Map<String, Bitmap>
+    val mainBitmaps: Map<String, Bitmap>,
+    val sideBitmaps: Map<String, Bitmap>
 )
 
 @Composable
@@ -117,7 +132,7 @@ private fun CarouselWidgetContent(
     val clampedActive = activeRank.coerceIn(1, total)
     val slotRanks = carouselSlots(clampedActive, total)
     val totalWidth = LocalSize.current.width
-    val bigPanelWidth = if (totalWidth > 120.dp) (totalWidth * 0.57f) else 190.dp
+    val bigPanelWidth = if (totalWidth > 120.dp) (totalWidth * 0.57f).coerceAtLeast(120.dp) else 160.dp
 
     Row(
         modifier = GlanceModifier
@@ -127,8 +142,9 @@ private fun CarouselWidgetContent(
     ) {
         slotRanks.forEachIndexed { idx, rank ->
             val deal = snapshot.deals[rank - 1]
-            val bitmap = snapshot.bitmaps[deal.id]
             val isMain = rank == clampedActive
+            val bitmap = (if (isMain) snapshot.mainBitmaps[deal.id] else snapshot.sideBitmaps[deal.id])
+                ?.takeIf { !it.isRecycled }
             if (idx > 0) {
                 Spacer(modifier = GlanceModifier.width(2.dp))
             }

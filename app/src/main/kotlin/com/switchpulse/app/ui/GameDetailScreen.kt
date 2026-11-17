@@ -141,32 +141,32 @@ fun GameDetailScreen(
     val scrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
 
-    var dragOffsetPx by remember { mutableFloatStateOf(0f) }
-    var backProgress by remember { mutableFloatStateOf(0f) }
+    val dragOffsetY = remember(detail.id) { Animatable(0f) }
+    val backProgressAnim = remember(detail.id) { Animatable(0f) }
     val dismissThresholdPx = with(density) { 120.dp.toPx() }
 
     PredictiveBackHandler(enabled = true) { progressFlow ->
         try {
             progressFlow.collect { backEvent ->
-                backProgress = backEvent.progress.coerceIn(0f, 1f)
+                backProgressAnim.snapTo(backEvent.progress.coerceIn(0f, 1f))
             }
             onDismiss()
         } catch (_: CancellationException) {
-            backProgress = 0f
+            scope.launch { backProgressAnim.animateTo(0f, Motion.settle()) }
         }
     }
 
     var contentRevealed by remember(detail.id) { mutableStateOf(reduceMotion) }
-    val closeIconRotation = remember(detail.id) { Animatable(if (reduceMotion) 0f else -90f) }
-    val closeIconScale = remember(detail.id) { Animatable(if (reduceMotion) 1f else 0.6f) }
-    val cutoutOffsetY = remember(detail.id) { Animatable(if (reduceMotion) 0f else with(density) { 16.dp.toPx() }) }
+    val closeIconRotation = remember(detail.id) { Animatable(if (reduceMotion) 0f else -45f) }
+    val closeIconScale = remember(detail.id) { Animatable(if (reduceMotion) 1f else 0.75f) }
+    val cutoutOffsetY = remember(detail.id) { Animatable(if (reduceMotion) 0f else with(density) { 10.dp.toPx() }) }
 
     LaunchedEffect(detail.id, reduceMotion) {
         if (!reduceMotion) {
-            launch { closeIconRotation.animateTo(0f, Motion.emphasized()) }
-            launch { closeIconScale.animateTo(1f, Motion.emphasized()) }
-            launch { cutoutOffsetY.animateTo(0f, Motion.emphasized()) }
-            delay(160L)
+            launch { closeIconRotation.animateTo(0f, Motion.standard()) }
+            launch { closeIconScale.animateTo(1f, Motion.standard()) }
+            launch { cutoutOffsetY.animateTo(0f, Motion.standard()) }
+            delay(40L)
         }
         contentRevealed = true
     }
@@ -188,7 +188,7 @@ fun GameDetailScreen(
     var alertEditorExpanded by remember(detail.id, savedTargetPrice) { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
 
-    val combinedScale = (1f - (dragOffsetPx / 1200f).coerceIn(0f, 0.08f) - backProgress * 0.08f)
+    val combinedScale = (1f - (dragOffsetY.value / 1200f).coerceIn(0f, 0.08f) - backProgressAnim.value * 0.08f)
         .coerceIn(0.88f, 1f)
 
     Box(
@@ -196,25 +196,29 @@ fun GameDetailScreen(
             .fillMaxSize()
             .background(c.paper)
             .graphicsLayer {
-                translationY = dragOffsetPx
+                translationY = dragOffsetY.value
                 scaleX = combinedScale
                 scaleY = combinedScale
             }
             .pointerInput(detail.id) {
                 detectVerticalDragGestures(
                     onDragEnd = {
-                        if (dragOffsetPx > dismissThresholdPx) {
+                        if (dragOffsetY.value > dismissThresholdPx) {
                             onDismiss()
                         } else {
                             scope.launch {
-                                dragOffsetPx = 0f
+                                dragOffsetY.animateTo(0f, Motion.settle())
                             }
                         }
                     },
-                    onDragCancel = { dragOffsetPx = 0f },
+                    onDragCancel = {
+                        scope.launch { dragOffsetY.animateTo(0f, Motion.settle()) }
+                    },
                     onVerticalDrag = { _, dragAmount ->
-                        if (scrollState.value == 0 && (dragAmount > 0f || dragOffsetPx > 0f)) {
-                            dragOffsetPx = (dragOffsetPx + dragAmount).coerceAtLeast(0f)
+                        if (scrollState.value == 0 && (dragAmount > 0f || dragOffsetY.value > 0f)) {
+                            scope.launch {
+                                dragOffsetY.snapTo((dragOffsetY.value + dragAmount).coerceAtLeast(0f))
+                            }
                         }
                     }
                 )
@@ -240,10 +244,14 @@ fun GameDetailScreen(
                         radius = 0.dp,
                         modifier = Modifier
                             .fillMaxSize()
-                            .sharedElement(
+                            .sharedBounds(
                                 sharedContentState = rememberSharedContentState(key = detail.sharedCoverKey),
                                 animatedVisibilityScope = animatedVisibilityScope,
-                                boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) }
+                                boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
+                                resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
+                                    androidx.compose.ui.layout.ContentScale.Crop,
+                                    Alignment.Center
+                                )
                             )
                     )
                 }
@@ -291,26 +299,24 @@ fun GameDetailScreen(
                     .padding(horizontal = 20.dp)
                     .padding(top = 14.dp)
             ) {
-                // Meta row + Title + Price
-                AnimatedDetailBlock(visible = contentRevealed, delayMs = 0) {
-                    val metaParts = listOfNotNull(
-                        detail.platformLabel?.uppercase(),
-                        detail.publisher.takeIf { it.isNotBlank() }?.uppercase()
-                    )
-                    if (metaParts.isNotEmpty()) {
-                        Text(
-                            text = metaParts.joinToString(" · "),
-                            style = SpType.label.copy(fontWeight = FontWeight.SemiBold),
-                            color = c.muted
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
+                // Meta row + Title render immediately on frame 1 with screen entrance
+                val metaParts = listOfNotNull(
+                    detail.platformLabel?.uppercase(),
+                    detail.publisher.takeIf { it.isNotBlank() }?.uppercase()
+                )
+                if (metaParts.isNotEmpty()) {
                     Text(
-                        text = detail.title,
-                        style = SpType.detailTitle,
-                        color = c.ink
+                        text = metaParts.joinToString(" · "),
+                        style = SpType.label.copy(fontWeight = FontWeight.SemiBold),
+                        color = c.muted
                     )
+                    Spacer(modifier = Modifier.height(6.dp))
                 }
+                Text(
+                    text = detail.title,
+                    style = SpType.detailTitle,
+                    color = c.ink
+                )
 
                 if (detail.discountedPriceEur != null) {
                     AnimatedDetailBlock(visible = contentRevealed, delayMs = 40) {
@@ -411,14 +417,9 @@ fun GameDetailScreen(
                     }
                 }
 
-                // Per te section
+                // Keep the ranking AI verdict & explanation permanently; use insights summary only as fallback.
                 val aiScore = detail.aiScore
-                val headline = insights?.aiVerdict?.takeIf { it.isNotBlank() }
-                    ?: detail.aiHeadline
-                val longReason = insights?.summaryNote?.takeIf { it.isNotBlank() }
-                    ?: detail.aiReasonText
-                    ?: detail.localSummaryReason
-                    ?: detail.excerpt
+                val (headline, longReason) = GameDetailModel.resolveDescriptionTexts(detail, insights)
 
                 if (aiScore != null || headline != null || longReason != null) {
                     AnimatedDetailBlock(visible = contentRevealed, delayMs = 120) {

@@ -43,7 +43,17 @@ class SwitchPulseApp : Application() {
     }
 
     companion object {
-        fun containerFrom(context: Context): AppContainer =
-            (context.applicationContext as SwitchPulseApp).container
+        @Volatile
+        private var fallbackContainer: AppContainer? = null
+
+        fun containerFrom(context: Context): AppContainer {
+            val appCtx = context.applicationContext ?: context
+            if (appCtx is SwitchPulseApp) {
+                return appCtx.container
+            }
+            return fallbackContainer ?: synchronized(this) {
+                fallbackContainer ?: AppContainer(appCtx).also { fallbackContainer = it }
+            }
+        }
     }
 }

@@ -15,11 +15,16 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,6 +44,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CollectionsBookmark
 import androidx.compose.material.icons.rounded.Explore
@@ -157,6 +164,22 @@ private fun SwitchPulseRoot(
     var showFiltersSheet by rememberSaveable { mutableStateOf(false) }
     var showAddGameSheet by rememberSaveable { mutableStateOf(false) }
 
+    val feedListState = rememberLazyListState()
+    val feedSearchListState = rememberLazyListState()
+    val libraryListState = rememberLazyListState()
+    val perTeScrollState = rememberScrollState()
+
+    var cachedInsightsForDetail by remember {
+        mutableStateOf<Pair<String, com.switchpulse.app.data.model.GameExternalInsights>?>(null)
+    }
+    LaunchedEffect(state.selectedDetail?.id, state.detailInsights) {
+        val activeId = state.selectedDetail?.id
+        val ins = state.detailInsights
+        if (activeId != null && ins != null) {
+            cachedInsightsForDetail = activeId to ins
+        }
+    }
+
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -199,133 +222,204 @@ private fun SwitchPulseRoot(
         ) {
             val sharedScope = this
             Box(modifier = Modifier.fillMaxSize()) {
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    containerColor = c.paper,
-                    contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                    snackbarHost = { SpSnackbarHost(hostState = snackbarHostState) },
-                    bottomBar = {
-                        EditorialBottomBar(
-                            selectedTab = selectedTab,
-                            onSelectTab = { next ->
-                                if (next != selectedTab) {
-                                    viewModel.clearRankDeltas()
-                                    selectedTab = next
-                                }
-                            }
-                        )
-                    }
-                ) { innerPadding ->
-                    val tabSlidePx = with(density) { 8.dp.roundToPx() }
-                    AnimatedContent(
-                        targetState = selectedTab,
-                        transitionSpec = {
-                            if (reduceMotion) {
-                                fadeIn(Motion.quick(true)) togetherWith fadeOut(Motion.quick(true))
-                            } else {
-                                (fadeIn(androidx.compose.animation.core.tween(200, easing = Motion.Out)) +
-                                    slideInVertically(androidx.compose.animation.core.tween(200, easing = Motion.Out)) { tabSlidePx })
-                                    .togetherWith(fadeOut(androidx.compose.animation.core.tween(120)))
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(bottom = innerPadding.calculateBottomPadding()),
-                        label = "root_tabs"
-                    ) { tab ->
-                        when (tab) {
-                            0 -> FeedScreen(
-                                state = state,
-                                sharedTransitionScope = sharedScope,
-                                animatedVisibilityScope = this@AnimatedContent,
-                                onSelectPlatform = viewModel::setAppPlatformFilter,
-                                onOpenFilters = { showFiltersSheet = true },
-                                onOpenDealDetail = { deal, rank ->
-                                    viewModel.openDealDetail(deal, rank, "cover-${deal.id}")
-                                },
-                                onSwipeHideDeal = { deal ->
-                                    viewModel.hideDeal(deal)
-                                    scope.launch {
-                                        snackbarHostState.currentSnackbarData?.dismiss()
-                                        val res = snackbarHostState.showSnackbar(
-                                            message = "“${deal.title}” nascosto",
-                                            actionLabel = undoLabel,
-                                            duration = SnackbarDuration.Short
-                                        )
-                                        if (res == SnackbarResult.ActionPerformed) {
-                                            viewModel.unhideDeal(deal.id)
-                                        }
-                                    }
-                                },
-                                onSwipeOwnedDeal = { deal ->
-                                    viewModel.setGameOwned(deal.toLikedGame(), true)
-                                    scope.launch {
-                                        snackbarHostState.currentSnackbarData?.dismiss()
-                                        val res = snackbarHostState.showSnackbar(
-                                            message = "“${deal.title}” è nei tuoi giochi",
-                                            actionLabel = undoLabel,
-                                            duration = SnackbarDuration.Short
-                                        )
-                                        if (res == SnackbarResult.ActionPerformed) {
-                                            viewModel.setGameOwned(deal.toLikedGame(), false)
-                                        }
-                                    }
-                                },
-                                onQuickRateDeal = { deal, stars ->
-                                    viewModel.setGameRating(deal.toLikedGame(), stars)
-                                },
-                                onRefresh = viewModel::refreshDeals,
-                                onResetFilters = viewModel::resetFilters,
-                                onRerankMissingDeals = viewModel::rerankMissingVisibleDeals,
-                                onRerankAllNow = viewModel::rerankWithGeminiNow,
-                                onOpenUpdateSettings = { showSettings = true }
-                            )
-
-                            1 -> PerTeScreen(
-                                state = state,
-                                sharedTransitionScope = sharedScope,
-                                animatedVisibilityScope = this@AnimatedContent,
-                                onGenerateSoul = viewModel::generateGamerSoul,
-                                onSaveUserTastePrompt = viewModel::setUserTastePrompt,
-                                onRefreshDiscoveryPicks = { viewModel.discoverGamesForSoul(freshBatch = true) },
-                                onOpenDiscoveryDetail = viewModel::openDiscoveryDetail,
-                                onOpenSettings = { showSettings = true },
-                                onOpenAddGame = { showAddGameSheet = true }
-                            )
-
-                            else -> LibraryScreen(
-                                state = state,
-                                sharedTransitionScope = sharedScope,
-                                animatedVisibilityScope = this@AnimatedContent,
-                                onOpenSettings = { showSettings = true },
-                                onOpenAddGameSheet = { showAddGameSheet = true },
-                                onOpenLibraryDetail = viewModel::openLibraryDetail,
-                                onSwipeRemoveGame = { game ->
-                                    viewModel.removeLikedGame(game.id)
-                                    scope.launch {
-                                        snackbarHostState.currentSnackbarData?.dismiss()
-                                        val res = snackbarHostState.showSnackbar(
-                                            message = "“${game.title}” rimosso",
-                                            actionLabel = undoLabel,
-                                            duration = SnackbarDuration.Short
-                                        )
-                                        if (res == SnackbarResult.ActionPerformed) {
-                                            viewModel.setGameOwned(game, game.isOwned)
-                                            if (game.rating != null) viewModel.setGameRating(game, game.rating)
-                                            if (!game.userNote.isNullOrBlank()) viewModel.setGameNote(game, game.userNote)
-                                        }
-                                    }
-                                }
-                            )
+                AnimatedContent(
+                    targetState = state.selectedDetail,
+                    contentKey = { it?.id },
+                    transitionSpec = {
+                        if (reduceMotion) {
+                            fadeIn(Motion.quick(true)) togetherWith fadeOut(Motion.quick(true))
+                        } else if (targetState != null) {
+                            (fadeIn(tween(220, easing = Motion.Out)))
+                                .togetherWith(
+                                    fadeOut(tween(170, easing = Motion.Out)) +
+                                        scaleOut(targetScale = 0.96f, animationSpec = tween(220, easing = Motion.Out))
+                                )
+                                .using(SizeTransform(clip = false))
+                        } else {
+                            (fadeIn(tween(220, easing = Motion.Out)) +
+                                scaleIn(initialScale = 0.96f, animationSpec = tween(250, easing = Motion.Out)))
+                                .togetherWith(
+                                    fadeOut(tween(220, easing = Motion.Away)) +
+                                        slideOutVertically(tween(220, easing = Motion.Away)) { it / 18 }
+                                )
+                                .using(SizeTransform(clip = false))
                         }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    label = "detail_transition"
+                ) { transitionDetail ->
+                    val detailVisibilityScope = this@AnimatedContent
+                    if (transitionDetail == null) {
+                        Scaffold(
+                            modifier = Modifier.fillMaxSize(),
+                            containerColor = c.paper,
+                            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                            snackbarHost = { SpSnackbarHost(hostState = snackbarHostState) },
+                            bottomBar = {
+                                EditorialBottomBar(
+                                    selectedTab = selectedTab,
+                                    onSelectTab = { next ->
+                                        if (next != selectedTab) {
+                                            viewModel.clearRankDeltas()
+                                            selectedTab = next
+                                        }
+                                    }
+                                )
+                            }
+                        ) { innerPadding ->
+                            val tabShiftPx = with(density) { 20.dp.roundToPx() }
+                            AnimatedContent(
+                                targetState = selectedTab,
+                                transitionSpec = {
+                                    if (reduceMotion) {
+                                        fadeIn(Motion.quick(true)) togetherWith fadeOut(Motion.quick(true))
+                                    } else {
+                                        val dir = if (targetState >= initialState) 1 else -1
+                                        (fadeIn(tween(210, easing = Motion.Out)) +
+                                            slideInHorizontally(tween(210, easing = Motion.Out)) { dir * tabShiftPx })
+                                            .togetherWith(
+                                                fadeOut(tween(150, easing = Motion.Away)) +
+                                                    slideOutHorizontally(tween(150, easing = Motion.Away)) { -dir * tabShiftPx }
+                                            )
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(bottom = innerPadding.calculateBottomPadding()),
+                                label = "root_tabs"
+                            ) { tab ->
+                                when (tab) {
+                                    0 -> FeedScreen(
+                                        state = state,
+                                        sharedTransitionScope = sharedScope,
+                                        animatedVisibilityScope = detailVisibilityScope,
+                                        listState = feedListState,
+                                        searchListState = feedSearchListState,
+                                        onSelectPlatform = viewModel::setAppPlatformFilter,
+                                        onOpenFilters = { showFiltersSheet = true },
+                                        onOpenDealDetail = { deal, rank ->
+                                            viewModel.openDealDetail(deal, rank, "cover-${deal.id}")
+                                        },
+                                        onSwipeHideDeal = { deal ->
+                                            viewModel.hideDeal(deal)
+                                            scope.launch {
+                                                snackbarHostState.currentSnackbarData?.dismiss()
+                                                val res = snackbarHostState.showSnackbar(
+                                                    message = "“${deal.title}” nascosto",
+                                                    actionLabel = undoLabel,
+                                                    duration = SnackbarDuration.Short
+                                                )
+                                                if (res == SnackbarResult.ActionPerformed) {
+                                                    viewModel.unhideDeal(deal.id)
+                                                }
+                                            }
+                                        },
+                                        onSwipeOwnedDeal = { deal ->
+                                            viewModel.setGameOwned(deal.toLikedGame(), true)
+                                            scope.launch {
+                                                snackbarHostState.currentSnackbarData?.dismiss()
+                                                val res = snackbarHostState.showSnackbar(
+                                                    message = "“${deal.title}” è nei tuoi giochi",
+                                                    actionLabel = undoLabel,
+                                                    duration = SnackbarDuration.Short
+                                                )
+                                                if (res == SnackbarResult.ActionPerformed) {
+                                                    viewModel.setGameOwned(deal.toLikedGame(), false)
+                                                }
+                                            }
+                                        },
+                                        onQuickRateDeal = { deal, stars ->
+                                            viewModel.setGameRating(deal.toLikedGame(), stars)
+                                        },
+                                        onRefresh = viewModel::refreshDeals,
+                                        onResetFilters = viewModel::resetFilters,
+                                        onRerankMissingDeals = viewModel::rerankMissingVisibleDeals,
+                                        onRerankAllNow = viewModel::rerankWithGeminiNow,
+                                        onOpenUpdateSettings = { showSettings = true }
+                                    )
+
+                                    1 -> PerTeScreen(
+                                        state = state,
+                                        sharedTransitionScope = sharedScope,
+                                        animatedVisibilityScope = detailVisibilityScope,
+                                        scrollState = perTeScrollState,
+                                        onGenerateSoul = viewModel::generateGamerSoul,
+                                        onSaveUserTastePrompt = viewModel::setUserTastePrompt,
+                                        onRefreshDiscoveryPicks = { viewModel.discoverGamesForSoul(freshBatch = true) },
+                                        onOpenDiscoveryDetail = viewModel::openDiscoveryDetail,
+                                        onOpenSettings = { showSettings = true },
+                                        onOpenAddGame = { showAddGameSheet = true }
+                                    )
+
+                                    else -> LibraryScreen(
+                                        state = state,
+                                        sharedTransitionScope = sharedScope,
+                                        animatedVisibilityScope = detailVisibilityScope,
+                                        listState = libraryListState,
+                                        onOpenSettings = { showSettings = true },
+                                        onOpenAddGameSheet = { showAddGameSheet = true },
+                                        onOpenLibraryDetail = viewModel::openLibraryDetail,
+                                        onSwipeRemoveGame = { game ->
+                                            viewModel.removeLikedGame(game.id)
+                                            scope.launch {
+                                                snackbarHostState.currentSnackbarData?.dismiss()
+                                                val res = snackbarHostState.showSnackbar(
+                                                    message = "“${game.title}” rimosso",
+                                                    actionLabel = undoLabel,
+                                                    duration = SnackbarDuration.Short
+                                                )
+                                                if (res == SnackbarResult.ActionPerformed) {
+                                                    viewModel.setGameOwned(game, game.isOwned)
+                                                    if (game.rating != null) viewModel.setGameRating(game, game.rating)
+                                                    if (!game.userNote.isNullOrBlank()) viewModel.setGameNote(game, game.userNote)
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        val activeDetail = state.selectedDetail?.takeIf { it.id == transitionDetail.id } ?: transitionDetail
+                        val activeInsights = if (state.selectedDetail?.id == activeDetail.id) {
+                            state.detailInsights ?: cachedInsightsForDetail?.takeIf { it.first == activeDetail.id }?.second
+                        } else {
+                            cachedInsightsForDetail?.takeIf { it.first == activeDetail.id }?.second
+                        }
+                        val existingEntry = state.settings.likedGames.firstOrNull {
+                            it.id == activeDetail.id ||
+                                com.switchpulse.app.data.model.DealTitleNormalizer.normalize(it.title) == activeDetail.normalizedTitle
+                        }
+                        val targetLiked = activeDetail.toLikedGame(existingEntry)
+                        GameDetailScreen(
+                            detail = activeDetail,
+                            settings = state.settings,
+                            insights = activeInsights,
+                            isLoadingInsights = state.selectedDetail?.id == activeDetail.id && state.isLoadingInsights,
+                            libraryEntry = existingEntry,
+                            sharedTransitionScope = sharedScope,
+                            animatedVisibilityScope = detailVisibilityScope,
+                            onDismiss = viewModel::closeDealDetail,
+                            onOpenEshop = onOpenUrl,
+                            onSetRating = { rating -> viewModel.setGameRating(targetLiked, rating) },
+                            onSetOwned = { owned -> viewModel.setGameOwned(targetLiked, owned) },
+                            onSetNote = { note -> viewModel.setGameNote(targetLiked, note) },
+                            onSetTargetPrice = { target -> viewModel.setGameTargetPrice(targetLiked, target) },
+                            onHideDeal = {
+                                activeDetail.sourceDeal?.let(viewModel::hideDeal)
+                            },
+                            onDismissPick = viewModel::dismissDiscoveryPick,
+                            onRemoveLibrary = viewModel::removeLikedGame,
+                            onRefreshInsights = viewModel::refreshSelectedDetailInsights
+                        )
                     }
                 }
 
                 // Settings full-screen push overlay
                 AnimatedVisibility(
                     visible = showSettings,
-                    enter = if (reduceMotion) fadeIn(Motion.quick(true)) else slideInHorizontally(Motion.standard()) { it / 3 } + fadeIn(Motion.standard()),
-                    exit = if (reduceMotion) fadeOut(Motion.quick(true)) else slideOutHorizontally(Motion.exit()) { it / 3 } + fadeOut(Motion.exit())
+                    enter = if (reduceMotion) fadeIn(Motion.quick(true)) else slideInHorizontally(Motion.standard()) { it / 2 } + fadeIn(Motion.standard()),
+                    exit = if (reduceMotion) fadeOut(Motion.quick(true)) else slideOutHorizontally(Motion.exit()) { it } + fadeOut(Motion.exit())
                 ) {
                     SettingsScreen(
                         state = state,
@@ -354,8 +448,8 @@ private fun SwitchPulseRoot(
                 // Hidden games full-screen push overlay
                 AnimatedVisibility(
                     visible = showHiddenDeals,
-                    enter = if (reduceMotion) fadeIn(Motion.quick(true)) else slideInHorizontally(Motion.standard()) { it / 3 } + fadeIn(Motion.standard()),
-                    exit = if (reduceMotion) fadeOut(Motion.quick(true)) else slideOutHorizontally(Motion.exit()) { it / 3 } + fadeOut(Motion.exit())
+                    enter = if (reduceMotion) fadeIn(Motion.quick(true)) else slideInHorizontally(Motion.standard()) { it / 2 } + fadeIn(Motion.standard()),
+                    exit = if (reduceMotion) fadeOut(Motion.quick(true)) else slideOutHorizontally(Motion.exit()) { it } + fadeOut(Motion.exit())
                 ) {
                     HiddenDealsScreen(
                         blacklistIds = state.settings.blacklistIds,
@@ -364,43 +458,6 @@ private fun SwitchPulseRoot(
                         onUnhideDeal = viewModel::unhideDeal,
                         onBack = { showHiddenDeals = false }
                     )
-                }
-
-                // Full-screen Game Detail Screen with Shared Element cover transition
-                AnimatedVisibility(
-                    visible = state.selectedDetail != null,
-                    enter = fadeIn(Motion.emphasized(reduceMotion)),
-                    exit = fadeOut(androidx.compose.animation.core.tween(if (reduceMotion) 120 else 300, easing = Motion.Away))
-                ) {
-                    val activeDetail = state.selectedDetail
-                    if (activeDetail != null) {
-                        val existingEntry = state.settings.likedGames.firstOrNull {
-                            it.id == activeDetail.id ||
-                                com.switchpulse.app.data.model.DealTitleNormalizer.normalize(it.title) == activeDetail.normalizedTitle
-                        }
-                        val targetLiked = activeDetail.toLikedGame(existingEntry)
-                        GameDetailScreen(
-                            detail = activeDetail,
-                            settings = state.settings,
-                            insights = state.detailInsights,
-                            isLoadingInsights = state.isLoadingInsights,
-                            libraryEntry = existingEntry,
-                            sharedTransitionScope = sharedScope,
-                            animatedVisibilityScope = this@AnimatedVisibility,
-                            onDismiss = viewModel::closeDealDetail,
-                            onOpenEshop = onOpenUrl,
-                            onSetRating = { rating -> viewModel.setGameRating(targetLiked, rating) },
-                            onSetOwned = { owned -> viewModel.setGameOwned(targetLiked, owned) },
-                            onSetNote = { note -> viewModel.setGameNote(targetLiked, note) },
-                            onSetTargetPrice = { target -> viewModel.setGameTargetPrice(targetLiked, target) },
-                            onHideDeal = {
-                                activeDetail.sourceDeal?.let(viewModel::hideDeal)
-                            },
-                            onDismissPick = viewModel::dismissDiscoveryPick,
-                            onRemoveLibrary = viewModel::removeLikedGame,
-                            onRefreshInsights = viewModel::refreshSelectedDetailInsights
-                        )
-                    }
                 }
             }
         }

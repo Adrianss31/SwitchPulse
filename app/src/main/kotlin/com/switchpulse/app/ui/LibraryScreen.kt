@@ -27,7 +27,9 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
@@ -46,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
@@ -96,7 +99,8 @@ fun LibraryScreen(
     onOpenAddGameSheet: () -> Unit,
     onOpenLibraryDetail: (LikedGame) -> Unit,
     onSwipeRemoveGame: (LikedGame) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState()
 ) {
     val c = SpTheme.colors
     var activeFilter by remember { mutableStateOf(LibraryFilterTab.ALL) }
@@ -121,6 +125,7 @@ fun LibraryScreen(
     val ratedCount = library.count { it.rating != null }
 
     LazyColumn(
+        state = listState,
         modifier = modifier
             .fillMaxSize()
             .background(c.paper)
@@ -357,10 +362,14 @@ private fun SwipeRemoveLibraryRow(
                         radius = 3.dp,
                         modifier = Modifier
                             .width(80.dp)
-                            .sharedElement(
+                            .sharedBounds(
                                 sharedContentState = rememberSharedContentState(key = "library-${game.id}"),
                                 animatedVisibilityScope = animatedVisibilityScope,
-                                boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) }
+                                boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
+                                resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
+                                    ContentScale.Crop,
+                                    Alignment.Center
+                                )
                             )
                     )
                 }

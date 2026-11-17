@@ -184,6 +184,19 @@ data class GameDetailModel(
             )
         }
 
+        fun resolveDescriptionTexts(
+            detail: GameDetailModel,
+            insights: GameExternalInsights?
+        ): Pair<String?, String?> {
+            val headline = detail.aiHeadline
+                ?: insights?.aiVerdict?.takeIf { it.isNotBlank() }
+            val reason = detail.aiReasonText
+                ?: detail.localSummaryReason
+                ?: insights?.summaryNote?.takeIf { it.isNotBlank() }
+                ?: detail.excerpt
+            return headline to reason
+        }
+
         fun verdictForScore(score: Int?): String? = when {
             score == null -> null
             score >= 85 -> "Imperdibile per te"

@@ -1,14 +1,17 @@
 package com.switchpulse.app
 
 import com.switchpulse.app.data.DealFilterEngine
+import com.switchpulse.app.data.local.CoverBitmapCache
 import com.switchpulse.app.data.model.AiDiscoveryPick
 import com.switchpulse.app.data.model.Deal
 import com.switchpulse.app.data.model.FeedSortMode
 import com.switchpulse.app.data.model.FilterSettings
 import com.switchpulse.app.data.model.GameDetailModel
 import com.switchpulse.app.data.model.GameDetailOrigin
+import com.switchpulse.app.data.model.GameExternalInsights
 import com.switchpulse.app.data.model.LikedGame
 import com.switchpulse.app.data.model.Platform
+import com.switchpulse.app.data.model.PlatformFilter
 import com.switchpulse.app.widget.carouselSlots
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -109,5 +112,57 @@ class RedesignLogicTest {
         assertEquals("Scacchi con i mech", fromPick.aiHeadline)
         assertEquals("Partite brevi e scelte tattiche pure", fromPick.aiReasonText)
         assertEquals(14.99, fromPick.discountedPriceEur!!, 0.001)
+    }
+
+    @Test
+    fun `resolveDescriptionTexts keeps ranking AI headline and explanation instead of replacing with insights`() {
+        val rankedDeal = sampleDeal("201", title = "Hollow Knight", aiScore = 91.0).copy(
+            aiReason = "Metroidvania rapido",
+            aiDetailedReason = "Descrizione dal ranking generale."
+        )
+        val detail = GameDetailModel.fromDeal(rankedDeal, rank = 2)
+        val loadedInsights = GameExternalInsights(
+            dealId = "201",
+            aiVerdict = "Nuovo verdetto dalla scheda",
+            summaryNote = "Nuova descrizione della scheda che NON deve sovrascrivere."
+        )
+
+        val (headline, reason) = GameDetailModel.resolveDescriptionTexts(detail, loadedInsights)
+        assertEquals("Imperdibile per te", headline)
+        assertEquals("Descrizione dal ranking generale.", reason)
+
+        val unrankedLib = GameDetailModel.fromLibraryGame(
+            LikedGame(id = "lib1", title = "Unranked Game", isOwned = true),
+            matchingActiveDeal = null
+        )
+        val (libHeadline, libReason) = GameDetailModel.resolveDescriptionTexts(unrankedLib, loadedInsights)
+        assertEquals("Nuovo verdetto dalla scheda", libHeadline)
+        assertEquals("Nuova descrizione della scheda che NON deve sovrascrivere.", libReason)
+    }
+
+    @Test
+    fun `selectCandidatesForAi includes Switch 2 coverage alongside primary deals when limit exceeds 40`() {
+        val sw1Deals = (1..55).map { idx ->
+            sampleDeal("sw1-$idx", title = "Switch One $idx").copy(popularityRank = idx)
+        }
+        val sw2Deal = sampleDeal("sw2-1", title = "Switch Two Exclusive")
+            .copy(platform = Platform.SWITCH_2, popularityRank = 80)
+        val settings = FilterSettings(appPlatformFilter = PlatformFilter.ALL)
+
+        val selected = DealFilterEngine.selectCandidatesForAi(sw1Deals + sw2Deal, settings, limit = 60)
+        assertEquals(56, selected.size)
+        assertTrue(selected.any { it.id == "sw2-1" })
+    }
+
+    @Test
+    fun `widget RGB_565 bitmap IPC payloads stay far below Android 1MB Binder limit`() {
+        val bytesPerPixelRgb565 = 2
+        val w1TotalBytes = CoverBitmapCache.HERO_WIDTH_PX * CoverBitmapCache.HERO_HEIGHT_PX * bytesPerPixelRgb565 +
+            3 * (CoverBitmapCache.THUMB_WIDTH_PX * CoverBitmapCache.THUMB_HEIGHT_PX * bytesPerPixelRgb565)
+        val w12TotalBytes = CoverBitmapCache.TALL_MAIN_WIDTH_PX * CoverBitmapCache.TALL_HEIGHT_PX * bytesPerPixelRgb565 +
+            2 * (CoverBitmapCache.TALL_SIDE_WIDTH_PX * CoverBitmapCache.TALL_HEIGHT_PX * bytesPerPixelRgb565)
+
+        assertTrue("W1 payload too large: $w1TotalBytes", w1TotalBytes < 300_000)
+        assertTrue("W12 payload too large: $w12TotalBytes", w12TotalBytes < 300_000)
     }
 }

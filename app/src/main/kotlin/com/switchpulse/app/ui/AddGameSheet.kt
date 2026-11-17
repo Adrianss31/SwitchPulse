@@ -43,6 +43,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +67,7 @@ import com.switchpulse.app.ui.motion.Motion
 import com.switchpulse.app.ui.theme.SpTheme
 import com.switchpulse.app.ui.theme.SpType
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,7 +79,11 @@ fun AddGameSheet(
     onSaveGameToLibrary: (game: LikedGame, rating: Int?, owned: Boolean, note: String?) -> Unit
 ) {
     val c = SpTheme.colors
+    val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val dismissSheet: () -> Unit = {
+        scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() }
+    }
     var query by remember { mutableStateOf("") }
     var expandedResultId by remember { mutableStateOf<String?>(null) }
     val focusRequester = remember { FocusRequester() }
@@ -101,7 +107,7 @@ fun AddGameSheet(
     }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = dismissSheet,
         sheetState = sheetState,
         containerColor = c.paper,
         scrimColor = c.scrim,
@@ -137,7 +143,7 @@ fun AddGameSheet(
                 Box(
                     modifier = Modifier
                         .size(44.dp)
-                        .clickable(onClick = onDismiss),
+                        .clickable(onClick = dismissSheet),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(

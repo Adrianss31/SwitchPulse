@@ -92,19 +92,46 @@ object DealFilterEngine {
     fun selectCandidatesForAi(
         rawDeals: List<Deal>,
         settings: FilterSettings,
-        limit: Int = 40
+        limit: Int = 60
     ): List<Deal> {
         val rawById = rawDeals.associateBy { it.id }
         val localBaseline = RecommendationEngine.applyRecommendations(
             deals = rawDeals.map { it.copy(aiAffinityScore = null, aiReason = null, aiDetailedReason = null) },
             settings = settings
         )
-        return rankEligibleDeals(
+        val primary = rankEligibleDeals(
             scoredDeals = localBaseline,
             settings = settings,
             platformOverride = settings.appPlatformFilter,
             limit = limit
-        ).mapNotNull { scored -> rawById[scored.id] }
+        )
+        if (limit <= 40) {
+            return primary.mapNotNull { scored -> rawById[scored.id] }
+        }
+
+        // Reserve extra slots across Switch 2 / Switch 1 / discounted deals when budget permits
+        // so switching platform tabs or demoting discouraged items still retains pre-scored coverage.
+        val pickedIds = LinkedHashSet<String>(limit)
+        val primaryLimit = (limit - 12).coerceAtLeast(35)
+        primary.take(primaryLimit).forEach { pickedIds += it.id }
+
+        val secondaryPlatforms = listOf(PlatformFilter.SWITCH_2, PlatformFilter.SWITCH_1, PlatformFilter.ALL)
+            .filter { it != settings.appPlatformFilter }
+        for (platform in secondaryPlatforms) {
+            if (pickedIds.size >= limit) break
+            rankEligibleDeals(
+                scoredDeals = localBaseline,
+                settings = settings,
+                platformOverride = platform,
+                limit = 16
+            ).forEach { candidate ->
+                if (pickedIds.size < limit) pickedIds += candidate.id
+            }
+        }
+        primary.drop(primaryLimit).forEach { candidate ->
+            if (pickedIds.size < limit) pickedIds += candidate.id
+        }
+        return pickedIds.mapNotNull { id -> rawById[id] }
     }
 
     private fun rankEligibleDeals(

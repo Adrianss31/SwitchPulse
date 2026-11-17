@@ -5,17 +5,18 @@
     android:background="#111111"
     android:orientation="horizontal">
 
-    <RelativeLayout
+    <FrameLayout
         android:layout_width="0dp"
         android:layout_height="match_parent"
         android:layout_marginEnd="2dp"
-        android:layout_weight="2.7"
+        android:layout_weight="3"
         android:background="#6B5537"
         android:padding="12dp">
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
             android:text="01"
             android:textColor="#FFFFFF"
             android:textSize="28sp"
@@ -24,12 +25,12 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_alignParentBottom="true"
+            android:layout_gravity="bottom|start"
             android:text="Top 10 · −60%"
             android:textColor="#FFFFFF"
             android:textSize="13sp"
             android:textStyle="bold" />
-    </RelativeLayout>
+    </FrameLayout>
 
     <TextView
         android:layout_width="0dp"

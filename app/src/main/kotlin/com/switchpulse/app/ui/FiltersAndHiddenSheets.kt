@@ -1,6 +1,7 @@
 package com.switchpulse.app.ui
 
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,10 +38,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -60,9 +64,12 @@ import com.switchpulse.app.ui.components.SectionLabel
 import com.switchpulse.app.ui.components.SegmentedChoice
 import com.switchpulse.app.ui.components.SpSlider
 import com.switchpulse.app.ui.components.SpSwitch
+import com.switchpulse.app.ui.motion.Motion
 import com.switchpulse.app.ui.motion.hapticTick
 import com.switchpulse.app.ui.theme.SpTheme
 import com.switchpulse.app.ui.theme.SpType
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -82,7 +89,11 @@ fun FiltersBottomSheet(
 ) {
     val c = SpTheme.colors
     val view = LocalView.current
+    val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hideAndDismiss: (() -> Unit) -> Unit = { then ->
+        scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
+    }
 
     var draftMinDiscount by remember(settings.minDiscountPercent) {
         mutableIntStateOf(settings.minDiscountPercent)
@@ -288,7 +299,7 @@ fun FiltersBottomSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp)
-                    .clickable(onClick = onOpenHiddenGames),
+                    .clickable { hideAndDismiss(onOpenHiddenGames) },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -318,7 +329,7 @@ fun FiltersBottomSheet(
             Spacer(modifier = Modifier.height(8.dp))
             PrimaryButton(
                 text = stringResource(R.string.filters_show_count, liveCount),
-                onClick = onDismiss,
+                onClick = { hideAndDismiss(onDismiss) },
                 height = 52.dp
             )
         }
@@ -335,7 +346,26 @@ fun HiddenDealsScreen(
     modifier: Modifier = Modifier
 ) {
     val c = SpTheme.colors
-    BackHandler(onBack = onBack)
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val backDragOffsetPx = remember { Animatable(0f) }
+    val backProgressRatio = remember { Animatable(0f) }
+    val maxPreviewShiftPx = with(density) { 48.dp.toPx() }
+    PredictiveBackHandler(enabled = true) { progressFlow ->
+        try {
+            progressFlow.collect { ev ->
+                val p = ev.progress.coerceIn(0f, 1f)
+                backProgressRatio.snapTo(p)
+                backDragOffsetPx.snapTo(p * maxPreviewShiftPx)
+            }
+            onBack()
+        } catch (_: CancellationException) {
+            scope.launch {
+                launch { backDragOffsetPx.animateTo(0f, Motion.settle()) }
+                launch { backProgressRatio.animateTo(0f, Motion.settle()) }
+            }
+        }
+    }
 
     val coverById = remember(rawCachedDeals) {
         rawCachedDeals.associateBy({ it.id }, { it.imageUrl })
@@ -345,6 +375,13 @@ fun HiddenDealsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .graphicsLayer {
+                val p = backProgressRatio.value
+                translationX = backDragOffsetPx.value
+                val scale = (1f - p * 0.04f).coerceIn(0.92f, 1f)
+                scaleX = scale
+                scaleY = scale
+            }
             .background(c.paper)
             .windowInsetsPadding(WindowInsets.statusBars)
             .windowInsetsPadding(WindowInsets.navigationBars)

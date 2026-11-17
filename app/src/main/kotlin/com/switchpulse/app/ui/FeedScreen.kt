@@ -1,5 +1,6 @@
 package com.switchpulse.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
@@ -9,7 +10,8 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -35,7 +37,9 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -74,6 +78,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
@@ -141,7 +146,9 @@ fun FeedScreen(
     onRerankMissingDeals: () -> Unit,
     onRerankAllNow: () -> Unit,
     onOpenUpdateSettings: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState(),
+    searchListState: LazyListState = rememberLazyListState()
 ) {
     val c = SpTheme.colors
     val view = LocalView.current
@@ -162,6 +169,11 @@ fun FeedScreen(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var popoverTargetDeal by remember { mutableStateOf<Deal?>(null) }
     var recentlyRatedBadgeId by remember { mutableStateOf<String?>(null) }
+
+    BackHandler(enabled = searchExpanded) {
+        searchQuery = ""
+        searchExpanded = false
+    }
 
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(searchExpanded) {
@@ -507,7 +519,9 @@ fun FeedScreen(
                 )
             } else if (state.settings.hasKeyFor(state.settings.rerankTarget.provider) && hasTasteSignals) {
                 val aiError = state.settings.geminiStatusSummary.startsWith("⚠️")
-                val missingAiCount = state.deals.count { it.aiAffinityScore == null }
+                val missingAiCount = state.deals.count {
+                    it.aiAffinityScore == null && it.id !in state.skippedAiDealIds
+                }
                 if (aiError) {
                     ActionBanner(
                         text = stringResource(R.string.ranking_banner_ai_error),
@@ -554,7 +568,17 @@ fun FeedScreen(
                 AnimatedContent(
                     targetState = state.settings.appPlatformFilter,
                     transitionSpec = {
-                        fadeIn(Motion.standard(reduceMotion)) togetherWith fadeOut(Motion.quick(reduceMotion))
+                        if (reduceMotion) {
+                            fadeIn(Motion.quick(true)) togetherWith fadeOut(Motion.quick(true))
+                        } else {
+                            val dir = if (targetState.ordinal >= initialState.ordinal) 1 else -1
+                            (fadeIn(tween(220, easing = Motion.Out)) +
+                                slideInHorizontally(tween(220, easing = Motion.Out)) { dir * (it / 16) })
+                                .togetherWith(
+                                    fadeOut(tween(150, easing = Motion.Away)) +
+                                        slideOutHorizontally(tween(150, easing = Motion.Away)) { -dir * (it / 20) }
+                                )
+                        }
                     },
                     label = "platform_feed_transition"
                 ) { _ ->
@@ -583,6 +607,7 @@ fun FeedScreen(
                         searchQuery.isNotBlank() -> {
                             // Flat numbered search results across the entire eligible catalog
                             LazyColumn(
+                                state = searchListState,
                                 modifier = Modifier.fillMaxSize(),
                                 contentPadding = PaddingValues(bottom = 24.dp)
                             ) {
@@ -624,6 +649,7 @@ fun FeedScreen(
                             val rows = displayedDeals.drop(3)
 
                             LazyColumn(
+                                state = listState,
                                 modifier = Modifier.fillMaxSize(),
                                 contentPadding = PaddingValues(bottom = 28.dp)
                             ) {
@@ -910,6 +936,7 @@ private fun HeroDealItem(
     animatedVisibilityScope: AnimatedVisibilityScope
 ) {
     val c = SpTheme.colors
+    val reduceMotion = LocalReduceMotion.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -924,10 +951,14 @@ private fun HeroDealItem(
                     radius = 4.dp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .sharedElement(
+                        .sharedBounds(
                             sharedContentState = rememberSharedContentState(key = "cover-${deal.id}"),
                             animatedVisibilityScope = animatedVisibilityScope,
-                            boundsTransform = { _, _ -> Motion.emphasized() }
+                            boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
+                            resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
+                                ContentScale.Crop,
+                                Alignment.Center
+                            )
                         )
                 )
             }
@@ -1001,6 +1032,7 @@ private fun PodiumDealItem(
     animatedVisibilityScope: AnimatedVisibilityScope
 ) {
     val c = SpTheme.colors
+    val reduceMotion = LocalReduceMotion.current
     Column(modifier = Modifier.fillMaxWidth()) {
         Box(modifier = Modifier.fillMaxWidth()) {
             with(sharedTransitionScope) {
@@ -1010,10 +1042,14 @@ private fun PodiumDealItem(
                     radius = 4.dp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .sharedElement(
+                        .sharedBounds(
                             sharedContentState = rememberSharedContentState(key = "cover-${deal.id}"),
                             animatedVisibilityScope = animatedVisibilityScope,
-                            boundsTransform = { _, _ -> Motion.emphasized() }
+                            boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
+                            resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
+                                ContentScale.Crop,
+                                Alignment.Center
+                            )
                         )
                 )
             }
@@ -1083,6 +1119,7 @@ private fun DealRowItem(
     animatedVisibilityScope: AnimatedVisibilityScope
 ) {
     val c = SpTheme.colors
+    val reduceMotion = LocalReduceMotion.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1110,10 +1147,14 @@ private fun DealRowItem(
                 radius = 3.dp,
                 modifier = Modifier
                     .width(80.dp)
-                    .sharedElement(
+                    .sharedBounds(
                         sharedContentState = rememberSharedContentState(key = "cover-${deal.id}"),
                         animatedVisibilityScope = animatedVisibilityScope,
-                        boundsTransform = { _, _ -> Motion.emphasized() }
+                        boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
+                        resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
+                            ContentScale.Crop,
+                            Alignment.Center
+                        )
                     )
             )
         }

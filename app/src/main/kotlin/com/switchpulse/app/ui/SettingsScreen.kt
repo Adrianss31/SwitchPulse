@@ -4,9 +4,10 @@ import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.os.Build
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -53,12 +54,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -81,11 +85,14 @@ import com.switchpulse.app.ui.components.SectionLabel
 import com.switchpulse.app.ui.components.SegmentedChoice
 import com.switchpulse.app.ui.components.SettingsRow
 import com.switchpulse.app.ui.components.SpSwitch
+import com.switchpulse.app.ui.motion.Motion
 import com.switchpulse.app.ui.theme.SpTheme
 import com.switchpulse.app.ui.theme.SpType
 import com.switchpulse.app.update.ReleaseInfo
 import com.switchpulse.app.widget.CarouselWidgetReceiver
 import com.switchpulse.app.widget.TopCoverWidgetReceiver
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -140,7 +147,26 @@ fun SettingsScreen(
 ) {
     val c = SpTheme.colors
     val context = LocalContext.current
-    BackHandler(onBack = onBack)
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val backDragOffsetPx = remember { Animatable(0f) }
+    val backProgressRatio = remember { Animatable(0f) }
+    val maxPreviewShiftPx = with(density) { 48.dp.toPx() }
+    PredictiveBackHandler(enabled = true) { progressFlow ->
+        try {
+            progressFlow.collect { ev ->
+                val p = ev.progress.coerceIn(0f, 1f)
+                backProgressRatio.snapTo(p)
+                backDragOffsetPx.snapTo(p * maxPreviewShiftPx)
+            }
+            onBack()
+        } catch (_: CancellationException) {
+            scope.launch {
+                launch { backDragOffsetPx.animateTo(0f, Motion.settle()) }
+                launch { backProgressRatio.animateTo(0f, Motion.settle()) }
+            }
+        }
+    }
 
     var editingProvider by remember { mutableStateOf<AiProvider?>(null) }
     var showModelsSheet by remember { mutableStateOf(false) }
@@ -205,6 +231,13 @@ fun SettingsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .graphicsLayer {
+                val p = backProgressRatio.value
+                translationX = backDragOffsetPx.value
+                val scale = (1f - p * 0.04f).coerceIn(0.92f, 1f)
+                scaleX = scale
+                scaleY = scale
+            }
             .background(c.paper)
             .windowInsetsPadding(WindowInsets.statusBars)
             .windowInsetsPadding(WindowInsets.navigationBars)
@@ -556,12 +589,17 @@ private fun ProviderApiKeySheet(
     onRemove: () -> Unit
 ) {
     val c = SpTheme.colors
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hideThen: (() -> Unit) -> Unit = { then ->
+        scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
+    }
     var keyInput by remember(provider, savedKey) { mutableStateOf(savedKey) }
     var showKey by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = sheetState,
         containerColor = c.paper,
         scrimColor = c.scrim,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
@@ -631,13 +669,13 @@ private fun ProviderApiKeySheet(
                 if (savedKey.isNotBlank()) {
                     SecondaryButton(
                         text = stringResource(R.string.action_remove),
-                        onClick = onRemove,
+                        onClick = { hideThen(onRemove) },
                         height = 48.dp
                     )
                 }
                 PrimaryButton(
                     text = stringResource(R.string.action_save),
-                    onClick = { onSave(keyInput) },
+                    onClick = { hideThen { onSave(keyInput) } },
                     modifier = Modifier.weight(1f),
                     height = 48.dp
                 )
@@ -654,9 +692,14 @@ private fun TaskModelsOverviewSheet(
     onDismiss: () -> Unit
 ) {
     val c = SpTheme.colors
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hideThen: (() -> Unit) -> Unit = { then ->
+        scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = sheetState,
         containerColor = c.paper,
         scrimColor = c.scrim,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
@@ -683,7 +726,7 @@ private fun TaskModelsOverviewSheet(
                     title = slot.title,
                     subtitle = slot.subtitle,
                     value = "${target.provider.shortLabel} · ${target.modelId.substringAfterLast('/').take(20)}",
-                    onClick = { onPickSlot(slot) }
+                    onClick = { hideThen { onPickSlot(slot) } }
                 )
             }
         }
@@ -703,6 +746,11 @@ private fun EditorialModelPickerSheet(
     onDismiss: () -> Unit
 ) {
     val c = SpTheme.colors
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hideThen: (() -> Unit) -> Unit = { then ->
+        scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
+    }
     var activeProvider by remember(currentTarget.provider) { mutableStateOf(currentTarget.provider) }
     var filterText by remember { mutableStateOf("") }
     var freeOnly by remember { mutableStateOf(false) }
@@ -722,7 +770,7 @@ private fun EditorialModelPickerSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = sheetState,
         containerColor = c.paper,
         scrimColor = c.scrim,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
@@ -814,7 +862,7 @@ private fun EditorialModelPickerSheet(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onSelectModel(model.provider, model.id) }
+                            .clickable { hideThen { onSelectModel(model.provider, model.id) } }
                             .padding(vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -858,9 +906,14 @@ private fun OptionPickerSheet(
     onDismiss: () -> Unit
 ) {
     val c = SpTheme.colors
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hideThen: (() -> Unit) -> Unit = { then ->
+        scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = sheetState,
         containerColor = c.paper,
         scrimColor = c.scrim,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
@@ -882,7 +935,7 @@ private fun OptionPickerSheet(
                             Icon(Icons.Rounded.Check, contentDescription = null, tint = c.ink, modifier = Modifier.size(18.dp))
                         }
                     },
-                    onClick = { onSelect(idx) }
+                    onClick = { hideThen { onSelect(idx) } }
                 )
             }
         }
@@ -896,9 +949,14 @@ private fun WidgetPinPickerSheet(
     onDismiss: () -> Unit
 ) {
     val c = SpTheme.colors
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hideThen: (() -> Unit) -> Unit = { then ->
+        scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = sheetState,
         containerColor = c.paper,
         scrimColor = c.scrim,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
@@ -914,12 +972,12 @@ private fun WidgetPinPickerSheet(
             SettingsRow(
                 title = stringResource(R.string.widget_w1_label),
                 subtitle = "4×4 · Copertina n. 1 protagonista + offerte 2–4",
-                onClick = { onPin(TopCoverWidgetReceiver::class.java) }
+                onClick = { hideThen { onPin(TopCoverWidgetReceiver::class.java) } }
             )
             SettingsRow(
                 title = stringResource(R.string.widget_w12_label),
                 subtitle = "4×2 · Carosello interattivo con tutta la Top 10",
-                onClick = { onPin(CarouselWidgetReceiver::class.java) }
+                onClick = { hideThen { onPin(CarouselWidgetReceiver::class.java) } }
             )
         }
     }
@@ -933,10 +991,15 @@ private fun AdvancedRepoSheet(
     onDismiss: () -> Unit
 ) {
     val c = SpTheme.colors
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hideThen: (() -> Unit) -> Unit = { then ->
+        scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
+    }
     var repoInput by remember(currentRepo) { mutableStateOf(currentRepo) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = sheetState,
         containerColor = c.paper,
         scrimColor = c.scrim,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
@@ -959,7 +1022,7 @@ private fun AdvancedRepoSheet(
             )
             PrimaryButton(
                 text = stringResource(R.string.action_save),
-                onClick = { onSave(repoInput.trim()) },
+                onClick = { hideThen { onSave(repoInput.trim()) } },
                 height = 48.dp
             )
         }

@@ -452,7 +452,7 @@ class GeminiReranker(
     }
 
     companion object {
-        const val MAX_CANDIDATES = 40
+        const val MAX_CANDIDATES = 60
         const val BATCH_SIZE = 20
 
         fun computeProfileSignature(

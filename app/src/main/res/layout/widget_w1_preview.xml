@@ -6,19 +6,21 @@
     android:orientation="vertical"
     android:padding="12dp">
 
-    <RelativeLayout
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1.8"
+        android:layout_weight="2"
         android:background="#6B5537"
         android:padding="12dp">
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="24dp"
+            android:layout_gravity="top|start"
             android:background="#FAFAF7"
             android:gravity="center"
-            android:paddingHorizontal="10dp"
+            android:paddingLeft="10dp"
+            android:paddingRight="10dp"
             android:text="@string/widget_pill_top10"
             android:textColor="#111111"
             android:textSize="11sp"
@@ -27,12 +29,12 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_alignParentBottom="true"
+            android:layout_gravity="bottom|start"
             android:text="01 · Top Offerta"
             android:textColor="#FFFFFF"
             android:textSize="18sp"
             android:textStyle="bold" />
-    </RelativeLayout>
+    </FrameLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -55,7 +57,8 @@
         <TextView
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_marginHorizontal="3dp"
+            android:layout_marginStart="3dp"
+            android:layout_marginEnd="3dp"
             android:layout_weight="1"
             android:background="#D98B3A"
             android:padding="6dp"

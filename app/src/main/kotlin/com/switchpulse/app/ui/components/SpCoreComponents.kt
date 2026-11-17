@@ -45,7 +45,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil3.compose.SubcomposeAsyncImage
+import coil3.compose.AsyncImage
 import com.switchpulse.app.R
 import com.switchpulse.app.data.DealFilterEngine
 import com.switchpulse.app.data.model.DealMatchSentiment
@@ -138,14 +138,15 @@ fun Cover(
         if (url.isNullOrBlank()) {
             fallbackContent()
         } else {
-            SubcomposeAsyncImage(
-                model = url,
-                contentDescription = title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-                loading = { fallbackContent() },
-                error = { fallbackContent() }
-            )
+            Box(modifier = Modifier.fillMaxSize()) {
+                fallbackContent()
+                AsyncImage(
+                    model = url,
+                    contentDescription = title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
     }
 }

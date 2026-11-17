@@ -65,7 +65,8 @@ data class MainUiState(
     val isLoadingModels: Boolean = false,
     val isGeneratingSoul: Boolean = false,
     val isDiscoveringGames: Boolean = false,
-    val showDiscoverySheet: Boolean = false
+    val showDiscoverySheet: Boolean = false,
+    val skippedAiDealIds: Set<String> = emptySet()
 )
 
 private data class TransientUiState(
@@ -86,7 +87,8 @@ private data class TransientUiState(
     val isLoadingModels: Boolean = false,
     val isGeneratingSoul: Boolean = false,
     val isDiscoveringGames: Boolean = false,
-    val showDiscoverySheet: Boolean = false
+    val showDiscoverySheet: Boolean = false,
+    val skippedAiDealIds: Set<String> = emptySet()
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -99,13 +101,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val transientState = MutableStateFlow(TransientUiState())
 
-    val uiState: StateFlow<MainUiState> = combine(
+    private val catalogFlow = combine(
         repository.filteredAppDealsFlow,
         repository.allEligibleDealsFlow,
-        repository.cachedDealsFlow,
+        repository.cachedDealsFlow
+    ) { deals, allEligibleDeals, rawCachedDeals ->
+        Triple(deals, allEligibleDeals, rawCachedDeals)
+    }
+
+    private val sessionMetaFlow = combine(
         repository.settingsFlow,
+        repository.skippedAiDealIdsFlow,
         transientState
-    ) { deals, allEligibleDeals, rawCachedDeals, settings, transient ->
+    ) { settings, skippedAiIds, transient ->
+        Triple(settings, skippedAiIds, transient)
+    }
+
+    val uiState: StateFlow<MainUiState> = combine(
+        catalogFlow,
+        sessionMetaFlow
+    ) { (deals, allEligibleDeals, rawCachedDeals), (settings, skippedAiIds, transient) ->
         val freshSelected = transient.selectedDeal?.let { sel ->
             allEligibleDeals.firstOrNull { it.id == sel.id }
                 ?: deals.firstOrNull { it.id == sel.id }
@@ -150,7 +165,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             isLoadingModels = transient.isLoadingModels,
             isGeneratingSoul = transient.isGeneratingSoul,
             isDiscoveringGames = transient.isDiscoveringGames,
-            showDiscoverySheet = transient.showDiscoverySheet
+            showDiscoverySheet = transient.showDiscoverySheet,
+            skippedAiDealIds = skippedAiIds
         )
     }.stateIn(
         scope = viewModelScope,

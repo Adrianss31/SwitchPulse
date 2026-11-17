@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -48,11 +49,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
@@ -94,7 +97,8 @@ fun PerTeScreen(
     onOpenDiscoveryDetail: (AiDiscoveryPick) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAddGame: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    scrollState: ScrollState = rememberScrollState()
 ) {
     val c = SpTheme.colors
     var showEditWordsSheet by remember { mutableStateOf(false) }
@@ -107,7 +111,7 @@ fun PerTeScreen(
             .fillMaxSize()
             .background(c.paper)
             .windowInsetsPadding(WindowInsets.statusBars)
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 20.dp)
             .padding(bottom = 28.dp)
     ) {
@@ -486,10 +490,14 @@ private fun DiscoveryGridCard(
                 radius = 4.dp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .sharedElement(
+                    .sharedBounds(
                         sharedContentState = rememberSharedContentState(key = sharedKey),
                         animatedVisibilityScope = animatedVisibilityScope,
-                        boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) }
+                        boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
+                        resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
+                            ContentScale.Crop,
+                            Alignment.Center
+                        )
                     )
             )
         }
@@ -559,8 +567,12 @@ private fun EditTasteWordsSheet(
     onSave: (String) -> Unit
 ) {
     val c = SpTheme.colors
+    val scope = rememberCoroutineScope()
     var draft by remember(initialText) { mutableStateOf(initialText) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hideThen: (() -> Unit) -> Unit = { then ->
+        scope.launch { sheetState.hide() }.invokeOnCompletion { then() }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -608,12 +620,12 @@ private fun EditTasteWordsSheet(
             ) {
                 SecondaryButton(
                     text = stringResource(R.string.action_clear),
-                    onClick = { onSave("") },
+                    onClick = { hideThen { onSave("") } },
                     height = 48.dp
                 )
                 PrimaryButton(
                     text = stringResource(R.string.action_save),
-                    onClick = { onSave(draft.trim()) },
+                    onClick = { hideThen { onSave(draft.trim()) } },
                     modifier = Modifier.weight(1f),
                     height = 48.dp
                 )

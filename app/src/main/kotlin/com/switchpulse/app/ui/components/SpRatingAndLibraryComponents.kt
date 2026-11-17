@@ -41,7 +41,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -159,13 +161,30 @@ fun RatingPopover(
 ) {
     val c = SpTheme.colors
     val view = LocalView.current
+    val scope = rememberCoroutineScope()
     val reduceMotion = LocalReduceMotion.current
     val containerScale = remember { Animatable(if (reduceMotion) 1f else 0.85f) }
+    val containerAlpha = remember { Animatable(if (reduceMotion) 1f else 0f) }
     val starVisible = remember { List(5) { Animatable(if (reduceMotion) 1f else 0f) } }
+    var isClosing by remember { mutableStateOf(false) }
+
+    fun dismissAnimated(afterExit: () -> Unit) {
+        if (isClosing) return
+        isClosing = true
+        if (reduceMotion) {
+            afterExit()
+            return
+        }
+        scope.launch {
+            launch { containerScale.animateTo(0.86f, tween(140, easing = Motion.Away)) }
+            launch { containerAlpha.animateTo(0f, tween(130, easing = Motion.Away)) }
+        }.invokeOnCompletion { afterExit() }
+    }
 
     LaunchedEffect(Unit) {
         if (!reduceMotion) {
-            launch { containerScale.animateTo(1f, tween(260, easing = Motion.Out)) }
+            launch { containerAlpha.animateTo(1f, tween(180, easing = Motion.Out)) }
+            launch { containerScale.animateTo(1f, tween(240, easing = Motion.Out)) }
             for (i in 0..4) {
                 launch {
                     delay(40L + i * 35L)
@@ -175,7 +194,7 @@ fun RatingPopover(
         }
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = { dismissAnimated(onDismiss) }) {
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = c.paper,
@@ -184,6 +203,7 @@ fun RatingPopover(
                 .graphicsLayer {
                     scaleX = containerScale.value
                     scaleY = containerScale.value
+                    alpha = containerAlpha.value
                     transformOrigin = TransformOrigin(0.5f, 1f)
                 }
                 .shadow(20.dp, RoundedCornerShape(14.dp))
@@ -218,7 +238,7 @@ fun RatingPopover(
                                 }
                                 .clickable {
                                     view.hapticConfirm()
-                                    onRate(star)
+                                    dismissAnimated { onRate(star) }
                                 },
                             contentAlignment = Alignment.Center
                         ) {
