@@ -36,12 +36,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import coil3.compose.AsyncImage
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
@@ -191,6 +199,20 @@ fun GameDetailScreen(
     val combinedScale = (1f - (dragOffsetY.value / 1200f).coerceIn(0f, 0.08f) - backProgressAnim.value * 0.08f)
         .coerceIn(0.88f, 1f)
 
+    val galleryImages = remember(detail.coverUrl, insights?.screenshotUrls) {
+        buildList {
+            detail.coverUrl?.takeIf { it.isNotBlank() }?.let(::add)
+            insights?.screenshotUrls.orEmpty().forEach { shot ->
+                if (shot.isNotBlank() && shot !in this) add(shot)
+            }
+        }
+    }
+    val heroPagerState = rememberPagerState(
+        initialPage = 0,
+        pageCount = { galleryImages.size.coerceAtLeast(1) }
+    )
+    var lightboxIndex by remember(detail.id) { mutableStateOf<Int?>(null) }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -231,29 +253,49 @@ fun GameDetailScreen(
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(bottom = 32.dp)
         ) {
-            // Full-width 16:9 Cover hero (~219 dp on 390 dp width)
+            // Full-width 16:9 swipeable Hero cover + screenshots gallery
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(219.dp)
             ) {
-                with(sharedTransitionScope) {
-                    Cover(
-                        url = detail.coverUrl,
-                        title = detail.title,
-                        radius = 0.dp,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .sharedBounds(
-                                sharedContentState = rememberSharedContentState(key = detail.sharedCoverKey),
-                                animatedVisibilityScope = animatedVisibilityScope,
-                                boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
-                                resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
-                                    androidx.compose.ui.layout.ContentScale.Crop,
-                                    Alignment.Center
-                                )
+                HorizontalPager(
+                    state = heroPagerState,
+                    userScrollEnabled = galleryImages.size > 1,
+                    beyondViewportPageCount = 1,
+                    modifier = Modifier.fillMaxSize()
+                ) { page ->
+                    if (page == 0) {
+                        with(sharedTransitionScope) {
+                            Cover(
+                                url = galleryImages.firstOrNull() ?: detail.coverUrl,
+                                title = detail.title,
+                                radius = 0.dp,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .sharedBounds(
+                                        sharedContentState = rememberSharedContentState(key = detail.sharedCoverKey),
+                                        animatedVisibilityScope = animatedVisibilityScope,
+                                        boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
+                                        resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
+                                            ContentScale.Crop,
+                                            Alignment.Center
+                                        )
+                                    )
+                                    .clickable(enabled = galleryImages.isNotEmpty()) { lightboxIndex = 0 }
                             )
-                    )
+                        }
+                    } else {
+                        AsyncImage(
+                            model = galleryImages[page],
+                            contentDescription = "${detail.title} immagine ${page + 1}",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(c.bannerBg)
+                                .clickable { lightboxIndex = page }
+                        )
+                    }
                 }
 
                 if (detail.rank != null) {
@@ -266,6 +308,24 @@ fun GameDetailScreen(
                             .align(Alignment.BottomStart)
                             .offset { IntOffset(0, cutoutOffsetY.value.roundToInt()) }
                     )
+                }
+
+                if (galleryImages.size > 1) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 12.dp, bottom = 10.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.Black.copy(alpha = 0.65f))
+                            .clickable { lightboxIndex = heroPagerState.currentPage }
+                            .padding(horizontal = 9.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "${heroPagerState.currentPage + 1} / ${galleryImages.size}",
+                            style = SpType.captionBold.copy(fontSize = 11.5.sp, fontFeatureSettings = "tnum"),
+                            color = Color.White
+                        )
+                    }
                 }
 
                 Box(
@@ -479,6 +539,49 @@ fun GameDetailScreen(
                             )
                         }
                         HorizontalDivider(thickness = 1.dp, color = c.line)
+                    }
+                }
+
+                // Screenshots gallery strip ("Immagini")
+                val extraScreenshots = remember(galleryImages) { galleryImages.drop(1) }
+                if (extraScreenshots.isNotEmpty()) {
+                    AnimatedDetailBlock(visible = contentRevealed, delayMs = 180) {
+                        Spacer(modifier = Modifier.height(18.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SectionLabel(text = stringResource(R.string.detail_gallery_title))
+                            Text(
+                                text = "${extraScreenshots.size}",
+                                style = SpType.captionBold.copy(fontFeatureSettings = "tnum"),
+                                color = c.muted
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            itemsIndexed(extraScreenshots) { idx, shotUrl ->
+                                Box(
+                                    modifier = Modifier
+                                        .width(168.dp)
+                                        .height(95.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(c.bannerBg)
+                                        .clickable { lightboxIndex = idx + 1 }
+                                ) {
+                                    AsyncImage(
+                                        model = shotUrl,
+                                        contentDescription = "${detail.title} screenshot ${idx + 1}",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -806,6 +909,96 @@ fun GameDetailScreen(
                         }
                     }
                 }
+            }
+        }
+
+        val activeLightboxIndex = lightboxIndex
+        if (activeLightboxIndex != null && galleryImages.isNotEmpty()) {
+            FullscreenGalleryDialog(
+                images = galleryImages,
+                initialIndex = activeLightboxIndex,
+                title = detail.title,
+                onDismiss = { lightboxIndex = null }
+            )
+        }
+    }
+}
+
+@Composable
+private fun FullscreenGalleryDialog(
+    images: List<String>,
+    initialIndex: Int,
+    title: String,
+    onDismiss: () -> Unit
+) {
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex.coerceIn(0, images.lastIndex),
+        pageCount = { images.size }
+    )
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable(onClick = onDismiss)
+        ) {
+            HorizontalPager(
+                state = pagerState,
+                beyondViewportPageCount = 1,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(
+                        model = images[page],
+                        contentDescription = "$title immagine ${page + 1}",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(top = 12.dp, end = 12.dp)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .clickable(onClick = onDismiss),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = stringResource(R.string.detail_close_cd),
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(bottom = 20.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.Black.copy(alpha = 0.7f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    text = "${pagerState.currentPage + 1} / ${images.size}",
+                    style = SpType.captionBold.copy(fontSize = 13.sp, fontFeatureSettings = "tnum"),
+                    color = Color.White
+                )
             }
         }
     }

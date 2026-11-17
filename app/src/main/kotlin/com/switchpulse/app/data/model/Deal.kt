@@ -162,6 +162,7 @@ data class GameExternalInsights(
     val hltbIsEstimated: Boolean = false,
     val aiVerdict: String? = null,
     val summaryNote: String? = null,
+    val screenshotUrls: List<String> = emptyList(),
     val sourceLabel: String = "",
     val profileSignature: String = "",
     val fetchedAtMs: Long = 0L
@@ -271,7 +272,8 @@ data class AiDiscoveryPick(
     val steamTagNames: List<String> = emptyList(),
     val currentPriceEur: Double? = null,
     val regularPriceEur: Double? = null,
-    val discountPercent: Int = 0
+    val discountPercent: Int = 0,
+    val isHiddenGem: Boolean = false
 ) {
     fun toLikedGame(rating: Int? = null, isOwned: Boolean = false): LikedGame {
         val resolvedId = eshopId?.takeIf { it.isNotBlank() }

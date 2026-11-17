@@ -208,4 +208,38 @@ class GeminiSoulClientTest {
         assertFalse(picks.any { it.title.equals("Nine Sols", ignoreCase = true) })
         assertEquals(5, picks.size)
     }
+
+    @Test
+    fun `discoverGamesForSoul parses 5 core plus 2 hidden gems, wrapper objects, numeric hints, and truncated arrays`() = runBlocking {
+        // Simulates truncated/wrapped output with numeric estimatedPriceHint and hiddenGem flags
+        val truncatedRaw = """
+            ```json
+            [
+              {"title":"CrossCode","pitchHook":"Action RPG retro","reason":"Combattimento profondo","estimatedPriceHint":19.99,"isHiddenGem":false},
+              {"title":"Tunic","pitchHook":"Segreti puri","reason":"Esplorazione pura","estimatedPriceHint":"~27,99 €","isHiddenGem":false},
+              {"title":"Unsighted","pitchHook":"Metroidvania a tempo","reason":"Parry preciso","estimatedPriceHint":"~19,99 €","isHiddenGem":true},
+              {"title":"Laika: Aged Through Blood","pitchHook":"Motorvania crudo","reason":"Meccanica unica","estimatedPriceHint":"~19,99 €","isHiddenGem":"true"},
+              {"title":"Incomplete Cut Off Title","reason":"tagliato prima della fine
+        """.trimIndent()
+        val body = """{"candidates":[{"content":{"parts":[{"text":${kotlinx.serialization.json.Json.encodeToString(kotlinx.serialization.serializer(), truncatedRaw)}}]}}]}"""
+        server.enqueue(MockResponse().setResponseCode(200).setBody(body))
+
+        val client = GeminiSoulClient(
+            httpClient = OkHttpClient(),
+            endpointOverride = server.url("/v1beta/models/gemini-4-hydrogen:generateContent").toString()
+        )
+        val result = client.discoverGamesForSoul(
+            apiKey = "AIzaTestKey",
+            soulProfile = null,
+            likedGames = sampleLibrary(),
+            desiredCount = 7
+        )
+
+        assertTrue("Expected salvaged success, got ${result.exceptionOrNull()}", result.isSuccess)
+        val picks = result.getOrThrow()
+        assertEquals(4, picks.size)
+        assertEquals(2, picks.count { !it.isHiddenGem })
+        assertEquals(2, picks.count { it.isHiddenGem })
+        assertEquals("19.99", picks.first().estimatedPriceHint)
+    }
 }

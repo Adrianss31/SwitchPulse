@@ -373,29 +373,80 @@ fun PerTeScreen(
                     height = 48.dp
                 )
             } else {
-                val rows = visiblePicks.chunked(2)
+                val corePicks = visiblePicks.filterNot { it.isHiddenGem }
+                val hiddenGems = visiblePicks.filter { it.isHiddenGem }
                 Column(
                     modifier = Modifier.graphicsLayer { alpha = gridDimAlpha },
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    rows.forEachIndexed { rowIdx, pair ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            pair.forEachIndexed { colIdx, pick ->
-                                DiscoveryGridCard(
-                                    pick = pick,
-                                    indexInGrid = rowIdx * 2 + colIdx,
-                                    animateEntrance = animateNewBatch,
-                                    sharedTransitionScope = sharedTransitionScope,
-                                    animatedVisibilityScope = animatedVisibilityScope,
-                                    onClick = { onOpenDiscoveryDetail(pick) },
-                                    modifier = Modifier.weight(1f)
-                                )
+                    if (corePicks.isNotEmpty()) {
+                        val hasOddCore = corePicks.size % 2 == 1
+                        val pairPool = if (hasOddCore) {
+                            DiscoveryGridCard(
+                                pick = corePicks.first(),
+                                indexInGrid = 0,
+                                animateEntrance = animateNewBatch,
+                                showGemBadge = false,
+                                sharedTransitionScope = sharedTransitionScope,
+                                animatedVisibilityScope = animatedVisibilityScope,
+                                onClick = { onOpenDiscoveryDetail(corePicks.first()) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            corePicks.drop(1)
+                        } else {
+                            corePicks
+                        }
+                        val baseIdx = if (hasOddCore) 1 else 0
+                        pairPool.chunked(2).forEachIndexed { rowIdx, pair ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                pair.forEachIndexed { colIdx, pick ->
+                                    DiscoveryGridCard(
+                                        pick = pick,
+                                        indexInGrid = baseIdx + rowIdx * 2 + colIdx,
+                                        animateEntrance = animateNewBatch,
+                                        showGemBadge = false,
+                                        sharedTransitionScope = sharedTransitionScope,
+                                        animatedVisibilityScope = animatedVisibilityScope,
+                                        onClick = { onOpenDiscoveryDetail(pick) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                if (pair.size == 1) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
                             }
-                            if (pair.size == 1) {
-                                Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+
+                    if (hiddenGems.isNotEmpty()) {
+                        if (corePicks.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            HorizontalDivider(thickness = 1.dp, color = c.line)
+                        }
+                        SectionLabel(text = "✦ ${stringResource(R.string.for_you_gems_title)}")
+                        hiddenGems.chunked(2).forEachIndexed { rowIdx, pair ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                pair.forEachIndexed { colIdx, gem ->
+                                    DiscoveryGridCard(
+                                        pick = gem,
+                                        indexInGrid = corePicks.size + rowIdx * 2 + colIdx,
+                                        animateEntrance = animateNewBatch,
+                                        showGemBadge = true,
+                                        sharedTransitionScope = sharedTransitionScope,
+                                        animatedVisibilityScope = animatedVisibilityScope,
+                                        onClick = { onOpenDiscoveryDetail(gem) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                if (pair.size == 1) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
                             }
                         }
                     }
@@ -518,6 +569,7 @@ private fun DiscoveryGridCard(
     pick: AiDiscoveryPick,
     indexInGrid: Int,
     animateEntrance: Boolean,
+    showGemBadge: Boolean = false,
     sharedTransitionScope: SharedTransitionScope,
     animatedVisibilityScope: AnimatedVisibilityScope,
     onClick: () -> Unit,
@@ -551,23 +603,41 @@ private fun DiscoveryGridCard(
             }
             .clickable(onClick = onClick)
     ) {
-        with(sharedTransitionScope) {
-            Cover(
-                url = pick.imageUrl,
-                title = pick.title,
-                radius = 4.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .sharedBounds(
-                        sharedContentState = rememberSharedContentState(key = sharedKey),
-                        animatedVisibilityScope = animatedVisibilityScope,
-                        boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
-                        resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
-                            ContentScale.Crop,
-                            Alignment.Center
+        Box(modifier = Modifier.fillMaxWidth()) {
+            with(sharedTransitionScope) {
+                Cover(
+                    url = pick.imageUrl,
+                    title = pick.title,
+                    radius = 4.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .sharedBounds(
+                            sharedContentState = rememberSharedContentState(key = sharedKey),
+                            animatedVisibilityScope = animatedVisibilityScope,
+                            boundsTransform = { _, _ -> Motion.emphasized(reduceMotion) },
+                            resizeMode = SharedTransitionScope.ResizeMode.scaleToBounds(
+                                ContentScale.Crop,
+                                Alignment.Center
+                            )
                         )
+                )
+            }
+            if (showGemBadge) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(c.ink)
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.for_you_gem_badge).uppercase(),
+                        style = SpType.label.copy(fontSize = 9.5.sp, fontWeight = FontWeight.Bold),
+                        color = c.paper
                     )
-            )
+                }
+            }
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(

@@ -47,6 +47,7 @@ class GameInsightsClient(
     private val geminiEndpointOverride: String? = null,
     private val steamStoreSearchUrl: String? = null,
     private val metacriticBaseUrl: String? = null,
+    private val nintendoProductHtmlOverrideUrl: String? = null,
     private val openAiEndpointOverride: String? = null,
     private val allowExternalMetadataLookup: Boolean = true,
     private val groundingBlockStore: GroundingBlockStore? = null
@@ -73,16 +74,28 @@ class GameInsightsClient(
         } else {
             null
         }
-        val steamMeta = if (allowExternalMetadataLookup) {
-            resolvedAppId?.let { fetchSteamMetacritic(it) }
+        val steamDetails = if (allowExternalMetadataLookup) {
+            resolvedAppId?.let { fetchSteamDetails(it) }
         } else {
             null
         }
+        val steamMeta = steamDetails?.metacritic
         val directMeta = if (allowExternalMetadataLookup && steamMeta == null) {
             fetchDirectMetacritic(deal.title)
         } else {
             null
         }
+        val steamScreenshots = steamDetails?.screenshots.orEmpty()
+        val nintendoScreenshots = if (allowExternalMetadataLookup && steamScreenshots.size < 2) {
+            fetchNintendoScreenshots(deal.eshopUrl)
+        } else {
+            emptyList()
+        }
+        val screenshotUrls = (steamScreenshots + nintendoScreenshots)
+            .map { it.trim() }
+            .filter { it.startsWith("http", ignoreCase = true) }
+            .distinct()
+            .take(8)
         val cleanKey = geminiApiKey.trim()
         val effectiveModel = geminiModel.trim().ifBlank { GeminiModels.defaultModelFor(provider) }
         val profileSig = computeProfileSignature(
@@ -168,6 +181,7 @@ class GameInsightsClient(
             hltbIsEstimated = hltbEstimated,
             aiVerdict = payload?.verdict?.trim()?.takeIf { it.isNotBlank() },
             summaryNote = payload?.summaryNote?.trim()?.takeIf { it.isNotBlank() },
+            screenshotUrls = screenshotUrls,
             sourceLabel = sourceLabel,
             profileSignature = profileSig,
             fetchedAtMs = System.currentTimeMillis()
@@ -203,7 +217,7 @@ class GameInsightsClient(
         }.getOrNull()
     }
 
-    private fun fetchSteamMetacritic(appId: Int): SteamMetacriticBlock? = runCatching {
+    private fun fetchSteamDetails(appId: Int): SteamDetailsPayload? = runCatching {
         val url = steamAppDetailsUrl.toHttpUrl().newBuilder()
             .addQueryParameter("appids", appId.toString())
             .build()
@@ -219,9 +233,59 @@ class GameInsightsClient(
             val rootObj = json.parseToJsonElement(raw).jsonObject
             val appEl: JsonElement = rootObj[appId.toString()] ?: return null
             val wrapper = json.decodeFromJsonElement(SteamAppDetailsWrapper.serializer(), appEl)
-            if (wrapper.success == true) wrapper.data?.metacritic else null
+            if (wrapper.success != true || wrapper.data == null) return null
+            val shots = wrapper.data.screenshots
+                .mapNotNull { s -> s.pathFull?.takeIf { it.isNotBlank() } ?: s.pathThumbnail?.takeIf { it.isNotBlank() } }
+                .distinct()
+                .take(8)
+            SteamDetailsPayload(
+                metacritic = wrapper.data.metacritic,
+                screenshots = shots
+            )
         }
     }.getOrNull()
+
+    internal fun fetchNintendoScreenshots(eshopUrl: String?): List<String> {
+        if (!allowExternalMetadataLookup) return emptyList()
+        val targetUrl = nintendoProductHtmlOverrideUrl?.takeIf { it.isNotBlank() } ?: run {
+            if (geminiEndpointOverride != null) return emptyList()
+            val raw = eshopUrl?.trim().orEmpty()
+            if (!raw.startsWith("https://www.nintendo.", ignoreCase = true) ||
+                raw.contains("/Search/", ignoreCase = true)
+            ) {
+                return emptyList()
+            }
+            raw
+        }
+        return runCatching {
+            val request = Request.Builder()
+                .url(targetUrl)
+                .header("User-Agent", "Mozilla/5.0")
+                .get()
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use emptyList()
+                val html = response.body?.string().orEmpty()
+                extractNintendoScreenshotUrls(html)
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    internal fun extractNintendoScreenshotUrls(html: String): List<String> {
+        if (html.isBlank()) return emptyList()
+        return NINTENDO_SCREENSHOT_REGEX.findAll(html)
+            .map { match ->
+                val rawPath = match.value
+                if (rawPath.startsWith("http", ignoreCase = true)) {
+                    rawPath
+                } else {
+                    "https://www.nintendo.com$rawPath"
+                }
+            }
+            .distinct()
+            .take(8)
+            .toList()
+    }
 
     internal fun fetchDirectMetacritic(rawTitle: String): SteamMetacriticBlock? {
         if (!allowExternalMetadataLookup) return null
@@ -488,6 +552,10 @@ class GameInsightsClient(
             "\"@type\"\\s*:\\s*\"AggregateRating\"[^}]*?\"ratingValue\"\\s*:\\s*(\\d{1,3})",
             setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
         )
+        private val NINTENDO_SCREENSHOT_REGEX = Regex(
+            "(?:https?://www\\.nintendo\\.com)?/eu/media/images/06_screenshots/[^\\s\"'<>\\\\]+?\\.(?:jpg|jpeg|png|webp)",
+            RegexOption.IGNORE_CASE
+        )
 
         fun computeProfileSignature(
             likedGames: List<LikedGame>,
@@ -501,7 +569,7 @@ class GameInsightsClient(
                 .joinToString("|") {
                     "${it.id}:${it.rating ?: 0}:${if (it.isOwned) 1 else 0}:${it.userNote.orEmpty().trim()}"
                 }
-            val raw = "${provider.id}:$modelId#$lib#${userTastePrompt.trim()}"
+            val raw = "v2:${provider.id}:$modelId#$lib#${userTastePrompt.trim()}"
             val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray())
             return digest.joinToString("") { "%02x".format(it) }.take(16)
         }
@@ -537,6 +605,11 @@ internal data class GroundedInsightsPayload(
     val summaryNote: String? = null
 )
 
+internal data class SteamDetailsPayload(
+    val metacritic: SteamMetacriticBlock? = null,
+    val screenshots: List<String> = emptyList()
+)
+
 @Serializable
 internal data class SteamAppDetailsWrapper(
     val success: Boolean? = null,
@@ -545,7 +618,14 @@ internal data class SteamAppDetailsWrapper(
 
 @Serializable
 internal data class SteamAppDetailsData(
-    val metacritic: SteamMetacriticBlock? = null
+    val metacritic: SteamMetacriticBlock? = null,
+    val screenshots: List<SteamScreenshotBlock> = emptyList()
+)
+
+@Serializable
+internal data class SteamScreenshotBlock(
+    @kotlinx.serialization.SerialName("path_thumbnail") val pathThumbnail: String? = null,
+    @kotlinx.serialization.SerialName("path_full") val pathFull: String? = null
 )
 
 @Serializable

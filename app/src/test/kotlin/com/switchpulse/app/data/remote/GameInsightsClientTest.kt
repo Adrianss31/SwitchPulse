@@ -333,4 +333,49 @@ class GameInsightsClientTest {
         assertEquals(0, requestsSeen)
         assertNull(insights.metacriticScore)
     }
+
+    @Test
+    fun `fetchInsights extracts Steam screenshots and Nintendo eShop 06_screenshots gallery`() = runBlocking {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.requestUrl?.encodedPath.orEmpty()
+                return when {
+                    path.endsWith("/api/appdetails") -> MockResponse().setResponseCode(200).setBody(
+                        """{"1145360":{"success":true,"data":{"metacritic":{"score":93},"screenshots":[{"path_full":"https://cdn.steam/1.jpg"},{"path_full":"https://cdn.steam/2.jpg"}]}}}"""
+                    )
+                    path.endsWith("/wonder.html") -> MockResponse().setResponseCode(200).setBody(
+                        """<img src="/eu/media/images/06_screenshots/games_5/wonder/screen_01.jpg"><img src="https://www.nintendo.com/eu/media/images/06_screenshots/games_5/wonder/screen_02.jpg">"""
+                    )
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+
+        val steamClient = GameInsightsClient(
+            httpClient = OkHttpClient(),
+            steamAppDetailsUrl = server.url("/api/appdetails").toString()
+        )
+        val steamInsights = steamClient.fetchInsights(deal = sampleDeal(steamAppId = 1145360), geminiApiKey = "")
+        assertEquals(listOf("https://cdn.steam/1.jpg", "https://cdn.steam/2.jpg"), steamInsights.screenshotUrls)
+
+        val nintendoClient = GameInsightsClient(
+            httpClient = OkHttpClient(),
+            steamStoreSearchUrl = server.url("/storesearch").toString(),
+            nintendoProductHtmlOverrideUrl = server.url("/wonder.html").toString()
+        )
+        val nintendoInsights = nintendoClient.fetchInsights(
+            deal = sampleDeal(steamAppId = null).copy(
+                title = "Super Mario Bros. Wonder",
+                publisher = "Nintendo"
+            ),
+            geminiApiKey = ""
+        )
+        assertEquals(
+            listOf(
+                "https://www.nintendo.com/eu/media/images/06_screenshots/games_5/wonder/screen_01.jpg",
+                "https://www.nintendo.com/eu/media/images/06_screenshots/games_5/wonder/screen_02.jpg"
+            ),
+            nintendoInsights.screenshotUrls
+        )
+    }
 }

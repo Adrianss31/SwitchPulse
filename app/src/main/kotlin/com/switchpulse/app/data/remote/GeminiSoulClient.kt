@@ -9,6 +9,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import okhttp3.OkHttpClient
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -16,15 +24,18 @@ import java.util.concurrent.TimeUnit
 /**
  * Uses Gemini, OpenRouter or DeepSeek BYOK to extrapolate a player's deeper "Gamer Soul"
  * (archetype, taste pillars, red flags, psychological preferences) from their rated games,
- * personal comments, backlog and free-text preferences, and to discover 5-10 Switch games
- * outside the discounts feed.
+ * personal comments, backlog and free-text preferences, and to discover Switch games
+ * outside the discounts feed (5 tailored + 2 hidden gems).
  */
 class GeminiSoulClient(
     private val httpClient: OkHttpClient = defaultHttpClient(),
     private val endpointOverride: String? = null,
     private val openAiEndpointOverride: String? = null
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+    }
     private val aiClient = AiCompletionClient(
         httpClient = httpClient,
         geminiEndpointOverride = endpointOverride,
@@ -115,7 +126,7 @@ class GeminiSoulClient(
         modelId: String = GeminiModels.HYDROGEN,
         userTastePrompt: String = "",
         excludePreviousTitles: List<String> = emptyList(),
-        desiredCount: Int = 8,
+        desiredCount: Int = 7,
         provider: AiProvider = AiProvider.GEMINI,
         dismissedTitles: List<String> = emptyList()
     ): Result<List<AiDiscoveryPick>> = withContext(Dispatchers.IO) {
@@ -144,7 +155,7 @@ class GeminiSoulClient(
                 modelId = effectiveModel,
                 prompt = prompt,
                 temperature = if (combinedExcluded.isNotEmpty()) 0.85 else 0.5,
-                maxOutputTokens = 4096,
+                maxOutputTokens = 8192,
                 expectJsonObject = false,
                 enableGeminiGoogleSearch = false
             )
@@ -153,13 +164,9 @@ class GeminiSoulClient(
             is AiCallResult.Success -> call.text
         }
 
-        val arrSlice = extractJsonArray(rawResponse)
-            ?: return@withContext Result.failure(IllegalStateException("Lista consigli AI non leggibile"))
-
-        val parsedList = runCatching {
-            json.decodeFromString<List<DiscoveryItemDto>>(arrSlice)
-        }.getOrElse {
-            return@withContext Result.failure(IllegalStateException("Formato consigli AI non valido"))
+        val parsedList = parseDiscoveryItems(rawResponse)
+        if (parsedList.isEmpty()) {
+            return@withContext Result.failure(IllegalStateException("Lista consigli AI non leggibile"))
         }
 
         val dismissedKeys = dismissedTitles.flatMap {
@@ -181,7 +188,8 @@ class GeminiSoulClient(
                     title = title,
                     pitchHook = dto.pitchHook.orEmpty().trim().take(72),
                     reason = dto.reason.orEmpty().trim().take(360),
-                    estimatedPriceHint = dto.estimatedPriceHint.orEmpty().trim().take(32)
+                    estimatedPriceHint = dto.estimatedPriceHint.orEmpty().trim().take(32),
+                    isHiddenGem = dto.isHiddenGem
                 )
             }
             .distinctBy { DealTitleNormalizer.canonicalKey(it.title) }
@@ -259,14 +267,27 @@ class GeminiSoulClient(
             "ANIMA DEL GIOCATORE: (non ancora generata — basati con precisione su voti, note e preferenze testuali)"
         }
 
+        val splitRule = if (count >= 6) {
+            val gemCount = 2
+            val coreCount = count - gemCount
+            """
+            COMPOZIONE ESATTA DEI $count GIOCHI:
+            - Primi $coreCount giochi ("isHiddenGem": false): consigli principali su misura per la tua anima (anche titoli cult o apprezzati, non necessariamente in sconto).
+            - Ultimi $gemCount giochi ("isHiddenGem": true): 2 vere GEMME NASCOSTE su Nintendo Switch / Switch 2 — titoli indie, di nicchia o sottovalutati poco conosciuti dal grande pubblico ma sorprendentemente in linea coi tuoi pilastri.
+            """.trimIndent()
+        } else {
+            "Consiglia esattamente $count videogiochi disponibili su Nintendo Switch / Switch 2 da scoprire (\"isHiddenGem\": false)."
+        }
+
         return """
             Sei un curatore videoludico esperto di Nintendo Switch e Nintendo Switch 2.
-            Consiglia esattamente $count videogiochi disponibili su Nintendo Switch / Switch 2 da scoprire, perfettamente coerenti con il profilo dell'utente.
+            $splitRule
 
             REGOLE TASSATIVE:
             1. I giochi NON devono essere necessariamente in sconto ora: puoi consigliare capolavori a prezzo pieno, gemme indie, cult o classici perfetti per i suoi gusti.
             2. DIVIETO ASSOLUTO di consigliare qualsiasi titolo già presente in `GIÀ IN LIBRERIA / GIÀ VOTATI / POSSEDUTI` (incluse edizioni speciali, deluxe o remastered dello stesso gioco).
             3. Dai varietà reale ed evita qualsiasi titolo presente nella lista `TITOLI GIÀ PROPOSTI IN PRECEDENZA`.
+            4. Mantieni `reason` conciso (1-2 frasi brevi in italiano, 15-30 parole) così l'array JSON resti compatto e valido.
 
             $soulSection
             Preferenze testuali: ${userTastePrompt.ifBlank { "(nessuna)" }}
@@ -277,8 +298,8 @@ class GeminiSoulClient(
             GIÀ IN LIBRERIA / GIÀ VOTATI / POSSEDUTI (ESCLUSI TASSATIVAMENTE):
             $libraryTitles
             $prevBlock
-            Rispondi ESCLUSIVAMENTE con un array JSON valido di $count elementi:
-            [{"title":"Nome esatto del gioco su Switch","pitchHook":"<gancio sintetico 4-7 parole>","reason":"<2 frasi in italiano: perché è perfetto per i tuoi gusti e cosa evita delle tue red flag>","estimatedPriceHint":"<es. ~19,99 €>"}]
+            Rispondi ESCLUSIVAMENTE con un array JSON valido di $count elementi (senza testo prima o dopo):
+            [{"title":"Nome esatto su Switch","pitchHook":"<gancio 4-7 parole>","reason":"<1-2 frasi concise in italiano>","estimatedPriceHint":"<es. ~19,99 €>","isHiddenGem":false}]
         """.trimIndent()
     }
 
@@ -294,7 +315,7 @@ class GeminiSoulClient(
     }
 
     private fun extractJsonObject(text: String): String? {
-        val cleaned = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val cleaned = stripMarkdownFences(text)
         val end = cleaned.lastIndexOf('}')
         if (end <= 0) return null
         val starts = cleaned.indices.filter { cleaned[it] == '{' && it < end }
@@ -305,20 +326,148 @@ class GeminiSoulClient(
         return null
     }
 
-    private fun extractJsonArray(text: String): String? {
-        val cleaned = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+    /**
+     * Multi-stage lenient parser supporting:
+     * 1. Clean top-level JSON arrays (`[...]`)
+     * 2. Wrapped JSON objects (`{"picks":[...]}`, `{"core":[...], "hiddenGems":[...]}`)
+     * 3. Lenient primitive coercion (numeric prices, string booleans)
+     * 4. Object-by-object salvage if output was truncated before the closing `]`
+     */
+    internal fun parseDiscoveryItems(rawText: String): List<DiscoveryItemDto> {
+        val cleaned = stripMarkdownFences(rawText)
+        if (cleaned.isBlank()) return emptyList()
+
+        // Stage 1: Parse a full valid JSON array or wrapper object containing arrays.
         val ends = cleaned.indices.filter { cleaned[it] == ']' }.asReversed()
         val starts = cleaned.indices.filter { cleaned[it] == '[' }
         for (end in ends) {
             for (start in starts) {
                 if (start >= end) continue
                 val slice = cleaned.substring(start, end + 1)
-                if (runCatching { json.decodeFromString<List<DiscoveryItemDto>>(slice) }.isSuccess) {
-                    return slice
+                val parsedEl = runCatching { json.parseToJsonElement(slice) }.getOrNull()
+                if (parsedEl is JsonArray) {
+                    val items = parsedEl.mapNotNull { el ->
+                        (el as? JsonObject)?.let { parseDiscoveryObject(it, defaultHiddenGem = false) }
+                    }
+                    if (items.isNotEmpty()) return items
                 }
             }
         }
+
+        // Stage 2: Check top-level JSON wrapper objects containing arrays (e.g. {"games":[...], "hiddenGems":[...]}).
+        val objEnd = cleaned.lastIndexOf('}')
+        if (objEnd > 0) {
+            for (objStart in cleaned.indices.filter { cleaned[it] == '{' && it < objEnd }) {
+                val slice = cleaned.substring(objStart, objEnd + 1)
+                val parsedObj = runCatching { json.parseToJsonElement(slice) }.getOrNull() as? JsonObject
+                    ?: continue
+                val collected = ArrayList<DiscoveryItemDto>()
+                parsedObj.forEach { (key, value) ->
+                    if (value is JsonArray) {
+                        val keyLooksGem = key.contains("gem", ignoreCase = true) ||
+                            key.contains("nascost", ignoreCase = true)
+                        value.forEach { itemEl ->
+                            (itemEl as? JsonObject)?.let { itemObj ->
+                                parseDiscoveryObject(itemObj, defaultHiddenGem = keyLooksGem)?.let(collected::add)
+                            }
+                        }
+                    }
+                }
+                if (collected.isNotEmpty()) return collected
+            }
+        }
+
+        // Stage 3: Object-by-object salvage (handles truncated arrays missing `]`, NDJSON, or single object).
+        return extractBalancedJsonObjects(cleaned).mapNotNull { objStr ->
+            val obj = runCatching { json.parseToJsonElement(objStr).jsonObject }.getOrNull() ?: return@mapNotNull null
+            parseDiscoveryObject(obj, defaultHiddenGem = false)
+        }
+    }
+
+    private fun parseDiscoveryObject(
+        obj: JsonObject,
+        defaultHiddenGem: Boolean
+    ): DiscoveryItemDto? {
+        val title = firstString(obj, "title", "name", "gioco", "titolo")?.takeIf { it.isNotBlank() }
+            ?: return null
+        val pitchHook = firstString(obj, "pitchHook", "hook", "pitch", "tagline", "sottotitolo")
+        val reason = firstString(obj, "reason", "why", "motivo", "descrizione")
+        val priceHint = firstString(obj, "estimatedPriceHint", "priceHint", "price", "prezzo")
+        val flag = firstBool(obj, "isHiddenGem", "hiddenGem", "is_hidden_gem", "gem", "gemma")
+            ?: run {
+                val cat = firstString(obj, "category", "type", "categoria").orEmpty()
+                if (cat.contains("gem", ignoreCase = true) || cat.contains("nascost", ignoreCase = true)) true
+                else defaultHiddenGem
+            }
+        return DiscoveryItemDto(
+            title = title,
+            pitchHook = pitchHook,
+            reason = reason,
+            estimatedPriceHint = priceHint,
+            isHiddenGem = flag
+        )
+    }
+
+    private fun firstString(obj: JsonObject, vararg keys: String): String? {
+        for (k in keys) {
+            val p = obj[k] as? JsonPrimitive ?: continue
+            val v = p.contentOrNull?.trim()
+            if (!v.isNullOrEmpty() && !v.equals("null", ignoreCase = true)) return v
+        }
         return null
+    }
+
+    private fun firstBool(obj: JsonObject, vararg keys: String): Boolean? {
+        for (k in keys) {
+            val p = obj[k] as? JsonPrimitive ?: continue
+            p.booleanOrNull?.let { return it }
+            val text = p.contentOrNull?.trim()?.lowercase()
+            if (text == "true" || text == "1" || text == "yes" || text == "si" || text == "sì") return true
+            if (text == "false" || text == "0" || text == "no") return false
+        }
+        return null
+    }
+
+    private fun stripMarkdownFences(text: String): String =
+        text.replace(Regex("```(?:json)?", RegexOption.IGNORE_CASE), "").trim()
+
+    private fun extractBalancedJsonObjects(text: String): List<String> {
+        val out = ArrayList<String>()
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var objStart = -1
+        for (i in text.indices) {
+            val ch = text[i]
+            if (escaped) {
+                escaped = false
+                continue
+            }
+            if (inString) {
+                when (ch) {
+                    '\\' -> escaped = true
+                    '"' -> inString = false
+                }
+                continue
+            }
+            when (ch) {
+                '"' -> inString = true
+                '{' -> {
+                    if (depth == 0) objStart = i
+                    depth++
+                }
+                '}' -> {
+                    if (depth > 0) {
+                        depth--
+                        if (depth == 0 && objStart >= 0) {
+                            out += text.substring(objStart, i + 1)
+                            objStart = -1
+                        }
+                    }
+                }
+            }
+        }
+        return out
     }
 
     companion object {
@@ -338,9 +487,10 @@ private data class SoulPayloadDto(
 )
 
 @Serializable
-private data class DiscoveryItemDto(
+internal data class DiscoveryItemDto(
     val title: String? = null,
     val pitchHook: String? = null,
     val reason: String? = null,
-    val estimatedPriceHint: String? = null
+    val estimatedPriceHint: String? = null,
+    val isHiddenGem: Boolean = false
 )

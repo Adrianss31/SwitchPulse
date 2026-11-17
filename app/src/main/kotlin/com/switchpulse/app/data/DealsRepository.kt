@@ -603,7 +603,8 @@ class DealsRepository(
         val hasUsefulData = fetched.metacriticScore != null ||
             !fetched.hltbMainHours.isNullOrBlank() ||
             !fetched.summaryNote.isNullOrBlank() ||
-            !fetched.aiVerdict.isNullOrBlank()
+            !fetched.aiVerdict.isNullOrBlank() ||
+            fetched.screenshotUrls.isNotEmpty()
         if (hasUsefulData) {
             preferences.saveCachedInsight(fetched)
         }
@@ -651,7 +652,7 @@ class DealsRepository(
             modelId = soulTask.modelId,
             userTastePrompt = settings.userTastePrompt,
             excludePreviousTitles = previousTitles,
-            desiredCount = 8,
+            desiredCount = 7,
             provider = soulTask.provider,
             dismissedTitles = settings.dismissedDiscoveryTitles
         )
