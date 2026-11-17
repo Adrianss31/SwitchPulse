@@ -109,11 +109,6 @@ private enum class AiTaskSlot(
         subtitle = "Analisi brevi top 40 offerte",
         recommendedId = GeminiModels.FLASH_LITE
     ),
-    INSIGHTS(
-        title = "Schede dettaglio gioco",
-        subtitle = "Metacritic, durata & verdetto",
-        recommendedId = GeminiModels.FLASH_LITE
-    ),
     SOUL(
         title = "Anima & Consigli su misura",
         subtitle = "Profilo giocatore e scoperte",
@@ -211,12 +206,10 @@ fun SettingsScreen(
         state.settings.availableOpenRouterModels,
         state.settings.availableDeepSeekModels,
         state.settings.rerankTarget,
-        state.settings.insightsTarget,
         state.settings.soulTarget
     ) {
         val selectedAll = listOf(
             state.settings.rerankTarget,
-            state.settings.insightsTarget,
             state.settings.soulTarget
         )
         AiProvider.entries.associateWith { provider ->
@@ -295,7 +288,6 @@ fun SettingsScreen(
             }
 
             val isDefaultModels = state.settings.rerankTarget == AiTaskTarget(AiProvider.GEMINI, GeminiModels.FLASH_LITE) &&
-                state.settings.insightsTarget == AiTaskTarget(AiProvider.GEMINI, GeminiModels.FLASH_LITE) &&
                 state.settings.soulTarget == AiTaskTarget(AiProvider.GEMINI, GeminiModels.HYDROGEN)
             SettingsRow(
                 title = stringResource(R.string.settings_models_row),
@@ -486,7 +478,6 @@ fun SettingsScreen(
     if (currentPickerSlot != null) {
         val currentSelection = when (currentPickerSlot) {
             AiTaskSlot.RERANK -> state.settings.rerankTarget
-            AiTaskSlot.INSIGHTS -> state.settings.insightsTarget
             AiTaskSlot.SOUL -> state.settings.soulTarget
         }
         EditorialModelPickerSheet(
@@ -499,7 +490,6 @@ fun SettingsScreen(
             onSelectModel = { provider, modelId ->
                 when (currentPickerSlot) {
                     AiTaskSlot.RERANK -> onSelectRerankTarget(provider, modelId)
-                    AiTaskSlot.INSIGHTS -> onSelectInsightsTarget(provider, modelId)
                     AiTaskSlot.SOUL -> onSelectSoulTarget(provider, modelId)
                 }
                 activeTaskPicker = null
@@ -719,7 +709,6 @@ private fun TaskModelsOverviewSheet(
             AiTaskSlot.entries.forEach { slot ->
                 val target = when (slot) {
                     AiTaskSlot.RERANK -> settings.rerankTarget
-                    AiTaskSlot.INSIGHTS -> settings.insightsTarget
                     AiTaskSlot.SOUL -> settings.soulTarget
                 }
                 SettingsRow(

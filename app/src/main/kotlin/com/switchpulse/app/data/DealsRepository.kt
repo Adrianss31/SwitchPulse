@@ -22,7 +22,6 @@ import com.switchpulse.app.data.remote.GeminiModels
 import com.switchpulse.app.data.remote.GeminiModelsClient
 import com.switchpulse.app.data.remote.GeminiReranker
 import com.switchpulse.app.data.remote.GeminiSoulClient
-import com.switchpulse.app.data.remote.GroundingBlockStore
 import com.switchpulse.app.data.remote.NintendoEshopClient
 import com.switchpulse.app.data.remote.SemanticRerankEntry
 import com.switchpulse.app.data.remote.SteamLookupCache
@@ -54,14 +53,7 @@ class DealsRepository(
     ),
     private val geminiReranker: GeminiReranker = GeminiReranker(httpClient = sharedHttpClient),
     private val insightsClient: GameInsightsClient = GameInsightsClient(
-        httpClient = sharedHttpClient,
-        groundingBlockStore = object : GroundingBlockStore {
-            override suspend fun isBlocked(keyFingerprint: String): Boolean =
-                preferences.isGroundingBlocked(keyFingerprint)
-
-            override suspend fun markBlocked(keyFingerprint: String, blockedUntilMs: Long) =
-                preferences.markGroundingBlocked(keyFingerprint, blockedUntilMs)
-        }
+        httpClient = sharedHttpClient
     ),
     private val soulClient: GeminiSoulClient = GeminiSoulClient(httpClient = sharedHttpClient),
     private val modelsClient: GeminiModelsClient = GeminiModelsClient(httpClient = sharedHttpClient),

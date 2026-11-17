@@ -176,8 +176,8 @@ class MultiProviderAiTest {
     }
 
     @Test
-    fun `GameInsightsClient routes cleanly to DeepSeek in 1 AI call without Google Search`() = runBlocking {
-        var aiCalls = 0
+    fun `GameInsightsClient performs zero AI calls even with DeepSeek key and uses direct Steam lookup`() = runBlocking {
+        var nonSteamCalls = 0
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.requestUrl?.encodedPath.orEmpty()
@@ -185,13 +185,10 @@ class MultiProviderAiTest {
                     path.endsWith("/api/appdetails") -> MockResponse().setResponseCode(200).setBody(
                         """{"1145360":{"success":true,"data":{"metacritic":{"score":93,"url":"https://www.metacritic.com/game/hades/"}}}}"""
                     )
-                    path.endsWith("/chat/completions") -> {
-                        aiCalls++
-                        MockResponse().setResponseCode(200).setBody(
-                            """{"choices":[{"message":{"content":"{\"metacriticScore\":93,\"hltbMainHours\":\"22 ore\",\"verdict\":\"Imperdibile per te\",\"summaryNote\":\"Perfetto per te.\"}"}}]}"""
-                        )
+                    else -> {
+                        nonSteamCalls++
+                        MockResponse().setResponseCode(404)
                     }
-                    else -> MockResponse().setResponseCode(404)
                 }
             }
         }
@@ -199,7 +196,7 @@ class MultiProviderAiTest {
         val client = GameInsightsClient(
             httpClient = OkHttpClient(),
             steamAppDetailsUrl = server.url("/api/appdetails").toString(),
-            openAiEndpointOverride = server.url("/chat/completions").toString()
+            metacriticBaseUrl = server.url("/").toString()
         )
 
         val insights = client.fetchInsights(
@@ -210,10 +207,10 @@ class MultiProviderAiTest {
             provider = AiProvider.DEEPSEEK
         )
 
-        assertEquals(1, aiCalls)
+        assertEquals(0, nonSteamCalls)
         assertEquals(93, insights.metacriticScore)
-        assertEquals("22 ore", insights.hltbMainHours)
-        assertEquals("Imperdibile per te", insights.aiVerdict)
-        assertTrue(insights.sourceLabel.contains("DeepSeek"))
+        assertEquals(null, insights.hltbMainHours)
+        assertEquals(null, insights.aiVerdict)
+        assertTrue(insights.sourceLabel.contains("Steam"))
     }
 }

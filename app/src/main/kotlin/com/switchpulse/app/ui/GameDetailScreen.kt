@@ -494,12 +494,18 @@ fun GameDetailScreen(
                     }
                 }
 
-                // Data trio: Metacritic · Durata · Steam
+                // Direct metrics: Metacritic (from Steam / Metacritic direct) & Steam reviews
                 val metaScore = insights?.metacriticScore ?: detail.metacriticScore
-                val hltbMain = insights?.hltbMainHours?.takeIf { it.isNotBlank() }
                 val steamPct = detail.steamPositivePercent
-                val showMetricsTrio = isLoadingInsights || metaScore != null || hltbMain != null || steamPct != null
-                if (showMetricsTrio) {
+                val encodedTitle = remember(detail.title) {
+                    android.net.Uri.encode(DealTitleNormalizer.normalize(detail.title))
+                }
+                val mcUrl = insights?.metacriticUrl
+                    ?: "https://www.metacritic.com/search/$encodedTitle/"
+                val hltbUrl = "https://howlongtobeat.com/?q=$encodedTitle"
+                val showMetaColumn = isLoadingInsights || metaScore != null
+                val showMetricsRow = showMetaColumn || steamPct != null
+                if (showMetricsRow) {
                     AnimatedDetailBlock(visible = contentRevealed, delayMs = 160) {
                         Spacer(modifier = Modifier.height(20.dp))
                         HorizontalDivider(thickness = 1.dp, color = c.line)
@@ -507,38 +513,55 @@ fun GameDetailScreen(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val metaLabel = when (insights?.metacriticOrigin) {
-                                MetacriticOrigin.STEAM_PC -> stringResource(R.string.detail_metacritic_pc)
-                                else -> stringResource(R.string.detail_metacritic)
+                            if (showMetaColumn) {
+                                val metaLabel = when (insights?.metacriticOrigin) {
+                                    MetacriticOrigin.STEAM_PC -> stringResource(R.string.detail_metacritic_pc)
+                                    else -> stringResource(R.string.detail_metacritic)
+                                }
+                                MetricColumn(
+                                    label = metaLabel,
+                                    value = metaScore?.toString(),
+                                    isLoading = isLoadingInsights && metaScore == null,
+                                    withLeftDivider = false,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .then(
+                                            if (metaScore != null) Modifier.clickable { onOpenEshop(mcUrl) }
+                                            else Modifier
+                                        )
+                                )
                             }
-                            MetricColumn(
-                                label = metaLabel,
-                                value = metaScore?.toString(),
-                                isLoading = isLoadingInsights && metaScore == null,
-                                withLeftDivider = false,
-                                modifier = Modifier.weight(1f)
-                            )
-                            val durLabel = if (insights?.hltbIsEstimated == true) {
-                                stringResource(R.string.detail_duration_est)
-                            } else {
-                                stringResource(R.string.detail_duration)
+                            if (steamPct != null) {
+                                MetricColumn(
+                                    label = stringResource(R.string.detail_steam),
+                                    value = "${steamPct}%",
+                                    isLoading = false,
+                                    withLeftDivider = showMetaColumn,
+                                    modifier = Modifier.weight(1f)
+                                )
                             }
-                            MetricColumn(
-                                label = durLabel,
-                                value = formatDurationShort(hltbMain),
-                                isLoading = isLoadingInsights && hltbMain == null,
-                                withLeftDivider = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                            MetricColumn(
-                                label = stringResource(R.string.detail_steam),
-                                value = steamPct?.let { "${it}%" },
-                                isLoading = false,
-                                withLeftDivider = true,
-                                modifier = Modifier.weight(1f)
-                            )
                         }
                         HorizontalDivider(thickness = 1.dp, color = c.line)
+                    }
+                }
+
+                // Direct quick links to Metacritic & HowLongToBeat (no AI scraping)
+                AnimatedDetailBlock(visible = contentRevealed, delayMs = 170) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ExternalSiteButton(
+                            label = stringResource(R.string.detail_metacritic),
+                            onClick = { onOpenEshop(mcUrl) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ExternalSiteButton(
+                            label = "HowLongToBeat",
+                            onClick = { onOpenEshop(hltbUrl) },
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
 
@@ -880,33 +903,12 @@ fun GameDetailScreen(
                                 color = c.muted
                             )
                         }
-                        val encoded = android.net.Uri.encode(DealTitleNormalizer.normalize(detail.title))
-                        val mcUrl = insights?.metacriticUrl
-                            ?: "https://www.metacritic.com/search/$encoded/"
-                        val hltbUrl = "https://howlongtobeat.com/?q=$encoded"
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            SecondaryButton(
-                                text = "Metacritic",
-                                onClick = { onOpenEshop(mcUrl) },
-                                modifier = Modifier.weight(1f),
-                                height = 40.dp
-                            )
-                            SecondaryButton(
-                                text = "HowLongToBeat",
-                                onClick = { onOpenEshop(hltbUrl) },
-                                modifier = Modifier.weight(1f),
-                                height = 40.dp
-                            )
-                            SecondaryButton(
-                                text = stringResource(R.string.detail_recalculate),
-                                onClick = onRefreshInsights,
-                                enabled = !isLoadingInsights,
-                                height = 40.dp
-                            )
-                        }
+                        SecondaryButton(
+                            text = stringResource(R.string.detail_recalculate),
+                            onClick = onRefreshInsights,
+                            enabled = !isLoadingInsights,
+                            height = 40.dp
+                        )
                     }
                 }
             }
@@ -1184,6 +1186,40 @@ private fun SimilarityBarRow(
     }
 }
 
+@Composable
+private fun ExternalSiteButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val c = SpTheme.colors
+    Row(
+        modifier = modifier
+            .height(38.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .border(BorderStroke(1.dp, c.border), RoundedCornerShape(4.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = SpType.rowTitle.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
+            color = c.ink,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+            contentDescription = null,
+            tint = c.muted,
+            modifier = Modifier.size(13.dp)
+        )
+    }
+}
+
 private fun formatDetailExpiry(endsAtIso: String?): String? {
     if (endsAtIso.isNullOrBlank()) return null
     val end = runCatching { Instant.parse(endsAtIso) }.getOrNull() ?: return null
@@ -1196,11 +1232,4 @@ private fun formatDetailExpiry(endsAtIso: String?): String? {
         hours < 48 -> "Offerta valida fino a domani, ${zoned.format(DateTimeFormatter.ofPattern("HH:mm", Locale.ITALY))}"
         else -> "Offerta valida fino al ${zoned.format(DateTimeFormatter.ofPattern("d MMMM", Locale.ITALY))}"
     }
-}
-
-private fun formatDurationShort(raw: String?): String? {
-    if (raw.isNullOrBlank()) return null
-    return raw
-        .replace(Regex("\\s*ore?\\b", RegexOption.IGNORE_CASE), " h")
-        .trim()
 }
