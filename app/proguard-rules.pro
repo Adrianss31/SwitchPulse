@@ -24,3 +24,4 @@
 -keep class androidx.glance.** { *; }
 -dontwarn androidx.glance.**
 -keep class com.switchpulse.app.widget.** { *; }
+-keep class com.switchpulse.app.backup.AppHubBackupProvider { *; }
