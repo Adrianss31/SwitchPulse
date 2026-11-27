@@ -15,6 +15,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.Process
+import com.switchpulse.app.SwitchPulseApp
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -22,17 +25,16 @@ import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /**
- * Bridge locale per esportare e ripristinare i dati dell'app verso AppHub.
- * Verifica la firma SHA-256 del chiamante prima di qualunque accesso.
+ * Bridge locale per esportare e ripristinare i dati di SwitchPulse verso AppHub,
+ * includendo in forma portabile le chiavi API IA cifrate con AndroidKeyStore.
  */
 class AppHubBackupProvider : ContentProvider() {
-
-    private val includeAppWebView: Boolean = false
 
     override fun onCreate(): Boolean = true
 
@@ -98,17 +100,50 @@ class AppHubBackupProvider : ContentProvider() {
     }
 
     private fun createExportFileDescriptor(ctx: Context): ParcelFileDescriptor {
-        val exportFile = File(ctx.cacheDir, EXPORT_ZIP_NAME)
-        val tmpFile = File(ctx.cacheDir, "$EXPORT_ZIP_NAME.tmp")
-        exportFile.parentFile?.mkdirs()
-        tmpFile.delete()
+        if ("robolectric".equals(Build.FINGERPRINT, ignoreCase = true)) {
+            val exportFile = File(ctx.cacheDir, EXPORT_ZIP_NAME)
+            val tmpFile = File(ctx.cacheDir, "$EXPORT_ZIP_NAME.tmp")
+            exportFile.parentFile?.mkdirs()
+            tmpFile.delete()
+            FileOutputStream(tmpFile).use { out ->
+                writeExportZip(ctx, BufferedOutputStream(out, 64 * 1024))
+            }
+            if (exportFile.exists()) exportFile.delete()
+            if (!tmpFile.renameTo(exportFile)) {
+                tmpFile.copyTo(exportFile, overwrite = true)
+                tmpFile.delete()
+            }
+            return ParcelFileDescriptor.open(exportFile, ParcelFileDescriptor.MODE_READ_ONLY)
+        }
 
+        val pipe = ParcelFileDescriptor.createPipe()
+        val readSide = pipe[0]
+        val writeSide = pipe[1]
+        Thread({
+            try {
+                ParcelFileDescriptor.AutoCloseOutputStream(writeSide).use { rawOut ->
+                    writeExportZip(ctx, BufferedOutputStream(rawOut, 64 * 1024))
+                }
+            } catch (_: Throwable) {
+                runCatching { writeSide.close() }
+            }
+        }, "AppHubBackupExport").apply {
+            isDaemon = true
+            start()
+        }
+        return readSide
+    }
+
+    private fun writeExportZip(ctx: Context, rawOut: BufferedOutputStream) {
         checkpointWalDatabases(ctx)
         val entries = collectBackupEntries(ctx)
-        ZipOutputStream(BufferedOutputStream(FileOutputStream(tmpFile))).use { zos ->
-            val buffer = ByteArray(16 * 1024)
+        val portableKeysBytes = exportPortableAiKeysBytes(ctx)
+
+        ZipOutputStream(rawOut).use { zos ->
+            val buffer = ByteArray(64 * 1024)
             for ((relPath, file) in entries) {
                 if (!file.isFile) continue
+                zos.setLevel(compressionLevelFor(relPath))
                 val entry = ZipEntry(relPath).apply { time = file.lastModified() }
                 zos.putNextEntry(entry)
                 FileInputStream(file).use { input ->
@@ -120,14 +155,31 @@ class AppHubBackupProvider : ContentProvider() {
                 }
                 zos.closeEntry()
             }
+
+            if (portableKeysBytes != null) {
+                zos.setLevel(Deflater.BEST_SPEED)
+                zos.putNextEntry(ZipEntry("files/$PORTABLE_AI_KEYS_FILE"))
+                zos.write(portableKeysBytes)
+                zos.closeEntry()
+            }
         }
-        if (exportFile.exists()) exportFile.delete()
-        if (!tmpFile.renameTo(exportFile)) {
-            tmpFile.copyTo(exportFile, overwrite = true)
-            tmpFile.delete()
-        }
-        return ParcelFileDescriptor.open(exportFile, ParcelFileDescriptor.MODE_READ_ONLY)
     }
+
+    private fun exportPortableAiKeysBytes(ctx: Context): ByteArray? = runCatching {
+        val settings = runBlocking {
+            SwitchPulseApp.containerFrom(ctx).preferences.getSettings()
+        }
+        val gemini = settings.geminiApiKey.trim()
+        val openrouter = settings.openRouterApiKey.trim()
+        val deepseek = settings.deepSeekApiKey.trim()
+        if (gemini.isEmpty() && openrouter.isEmpty() && deepseek.isEmpty()) return@runCatching null
+
+        JSONObject().apply {
+            if (gemini.isNotEmpty()) put("gemini", gemini)
+            if (openrouter.isNotEmpty()) put("openrouter", openrouter)
+            if (deepseek.isNotEmpty()) put("deepseek", deepseek)
+        }.toString().toByteArray(Charsets.UTF_8)
+    }.getOrNull()
 
     private fun createImportFileDescriptor(ctx: Context): ParcelFileDescriptor {
         val staging = File(ctx.cacheDir, STAGING_ZIP_NAME)
@@ -149,7 +201,7 @@ class AppHubBackupProvider : ContentProvider() {
         }
 
         val dataRoot = dataRootDir(ctx)
-        val allowedRoots = allowedRestoreRoots()
+        val allowedRoots = setOf("databases", "shared_prefs", "files")
 
         return try {
             ZipInputStream(BufferedInputStream(FileInputStream(stagingFile))).use { zis ->
@@ -191,7 +243,7 @@ class AppHubBackupProvider : ContentProvider() {
             }
 
             var filesRestored = 0
-            val buffer = ByteArray(16 * 1024)
+            val buffer = ByteArray(64 * 1024)
             ZipInputStream(BufferedInputStream(FileInputStream(stagingFile))).use { zis ->
                 while (true) {
                     val entry = zis.nextEntry ?: break
@@ -244,13 +296,6 @@ class AppHubBackupProvider : ContentProvider() {
     private fun dataRootDir(ctx: Context): File =
         ctx.filesDir.parentFile ?: ctx.dataDir
 
-    private fun allowedRestoreRoots(): Set<String> = buildSet {
-        add("databases")
-        add("shared_prefs")
-        add("files")
-        if (includeAppWebView) add("app_webview")
-    }
-
     private fun resolveSafeTarget(root: File, relativePath: String): File {
         require(!relativePath.startsWith("/") && !relativePath.contains("..")) {
             "Percorso ZIP non sicuro: $relativePath"
@@ -266,23 +311,19 @@ class AppHubBackupProvider : ContentProvider() {
     private fun collectBackupEntries(ctx: Context): List<Pair<String, File>> {
         val root = dataRootDir(ctx)
         val result = mutableListOf<Pair<String, File>>()
-        for (folder in allowedRestoreRoots()) {
+        for (folder in listOf("databases", "shared_prefs", "files")) {
             val dir = File(root, folder)
             if (!dir.isDirectory) continue
             dir.walkTopDown()
                 .filter { it.isFile }
                 .forEach { file ->
                     val relPath = file.relativeTo(root).path.replace('\\', '/')
-                    if (!isDefaultExcluded(relPath, file) && shouldIncludeAppFile(relPath, file)) {
+                    if (!isDefaultExcluded(relPath, file)) {
                         result += relPath to file
                     }
                 }
         }
         return result
-    }
-
-    private fun shouldIncludeAppFile(relPath: String, file: File): Boolean {
-        return true
     }
 
     private fun isDefaultExcluded(relPath: String, file: File): Boolean {
@@ -318,25 +359,18 @@ class AppHubBackupProvider : ContentProvider() {
                 name.startsWith("PersistedInstallation") ||
                 name == "profileInstalled" ||
                 name == "rList" ||
-                name == "before-restore.json" ||
+                name == PORTABLE_AI_KEYS_FILE ||
                 name.endsWith(".lock")
             ) {
                 return true
             }
         }
-        if (relPath.startsWith("app_webview/")) {
-            val excludedSegments = listOf(
-                "/Cache/",
-                "/Code Cache/",
-                "/GPUCache/",
-                "/ShaderCache/",
-                "/GrShaderCache/",
-                "/DawnCache/",
-                "/Service Worker/",
-            )
-            if (excludedSegments.any { relPath.contains(it) }) return true
-        }
         return false
+    }
+
+    private fun compressionLevelFor(relPath: String): Int {
+        val ext = relPath.substringAfterLast('.', "").lowercase()
+        return if (ext in PRECOMPRESSED_EXTENSIONS) Deflater.NO_COMPRESSION else Deflater.BEST_SPEED
     }
 
     private fun checkpointWalDatabases(ctx: Context) {
@@ -441,7 +475,13 @@ class AppHubBackupProvider : ContentProvider() {
         private const val KEY_FILES_RESTORED = "filesRestored"
         private const val STAGING_ZIP_NAME = "apphub_restore_staging.zip"
         private const val EXPORT_ZIP_NAME = "apphub_export_staging.zip"
+        private const val PORTABLE_AI_KEYS_FILE = "apphub_portable_ai_keys.json"
         private const val APPHUB_RELEASE_CERT_SHA256 =
             "f23b8a1655c118054bae73beb0a6aad36b82370c4febdc063d4f720a05e447a4"
+        private val PRECOMPRESSED_EXTENSIONS = setOf(
+            "mp4", "m4v", "mov", "mkv", "webm", "3gp", "avi",
+            "mp3", "m4a", "m4b", "ogg", "opus", "aac", "flac", "wav",
+            "jpg", "jpeg", "png", "webp", "gif", "zip", "gz",
+        )
     }
 }

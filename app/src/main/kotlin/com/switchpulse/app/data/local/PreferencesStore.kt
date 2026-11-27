@@ -37,6 +37,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.json.JSONObject
+import java.io.File
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "switchpulse_prefs")
 
@@ -157,6 +159,7 @@ class PreferencesStore(
         if (migrated) return
         migrationMutex.withLock {
             if (migrated) return
+            importPortableAiKeysIfPresent()
             val prefs = context.dataStore.data.first()
             val alreadyMigrated = prefs[KEY_DB_MIGRATED_V1] == true
             if (!alreadyMigrated) {
@@ -197,6 +200,26 @@ class PreferencesStore(
             }
             migrated = true
         }
+    }
+
+    private suspend fun importPortableAiKeysIfPresent() {
+        val file = File(context.filesDir, PORTABLE_AI_KEYS_FILE)
+        if (!file.isFile) return
+        runCatching {
+            val obj = JSONObject(file.readText(Charsets.UTF_8))
+            val gemini = obj.optString("gemini", "").trim()
+            val openrouter = obj.optString("openrouter", "").trim()
+            val deepseek = obj.optString("deepseek", "").trim()
+            if (gemini.isNotEmpty() || openrouter.isNotEmpty() || deepseek.isNotEmpty()) {
+                context.dataStore.edit { edit ->
+                    if (gemini.isNotEmpty()) edit[KEY_GEMINI_API_KEY] = SecureKeyStore.encrypt(gemini)
+                    if (openrouter.isNotEmpty()) edit[KEY_OPENROUTER_API_KEY] = SecureKeyStore.encrypt(openrouter)
+                    if (deepseek.isNotEmpty()) edit[KEY_DEEPSEEK_API_KEY] = SecureKeyStore.encrypt(deepseek)
+                    edit[KEY_GEMINI_SIGNATURE] = ""
+                }
+            }
+        }
+        runCatching { file.delete() }
     }
 
     suspend fun getSettings(): FilterSettings {
@@ -718,5 +741,6 @@ class PreferencesStore(
         private val KEY_FEED_SORT_MODE = stringPreferencesKey("feed_sort_mode")
         private val KEY_EXPIRING_SOON_ONLY = booleanPreferencesKey("expiring_soon_only")
         private val KEY_PREVIOUS_FEED_ORDER_JSON = stringPreferencesKey("previous_feed_order_json")
+        private const val PORTABLE_AI_KEYS_FILE = "apphub_portable_ai_keys.json"
     }
 }
